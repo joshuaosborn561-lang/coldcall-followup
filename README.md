@@ -2,16 +2,17 @@
 
 Every weekday at **4:30pm Eastern**, pull the day's outbound calls from
 [Allo](https://withallo.com) and push those people into a standing
-[Smartlead](https://smartlead.ai) campaign as follow-up leads.
+[Smartlead](https://smartlead.ai) campaign as follow-up leads — one campaign
+per rep, so the email comes from the person who actually made the call.
 
 Call someone at 10am, and by end of day they're in the sequence with the call
 date and Allo's AI summary attached as custom fields.
 
 ```
-Allo /calls (today, OUTBOUND)
+per rep: Allo /calls on their number (today, OUTBOUND)
    -> join phone number to Allo contact for the email address
-   -> dedupe by email, newest call wins
-   -> POST /campaigns/{id}/leads on Smartlead
+   -> dedupe by email ACROSS reps, newest call wins
+   -> POST /campaigns/{their campaign}/leads on Smartlead
 ```
 
 ## Setup
@@ -28,18 +29,27 @@ with these scopes:
 
 No write scopes are needed — this job never modifies anything in Allo.
 
-### 2. Smartlead campaign
+### 2. One Smartlead campaign per rep
 
-Create one campaign that stays running (e.g. "Cold Call Follow-Up"), build the
-sequence, and grab the numeric ID from its URL.
+Each rep sends from their own mailbox, so each rep needs their own standing
+campaign. Create one per person (e.g. "Cold Call Follow-Up — Josh"), build the
+sequence, and grab the numeric ID from each campaign's URL.
 
-**Create these custom fields on the campaign** before the first run, or
+Then map Allo number → campaign:
+
+```
+ALLO_ROUTES="+15550101010:12345:Josh,+15550202020:67890:Cayden"
+              number      campaign  label
+```
+
+**Create these custom fields on every campaign** before the first run, or
 Smartlead silently drops the values:
 
 - `call_date`
 - `call_summary`
 - `call_length_minutes`
 - `job_title`
+- `called_by`
 - `allo_call_id`
 - `allo_contact_id`
 
@@ -47,13 +57,17 @@ Then you can write sequences like:
 
 > Hi {{first_name}}, thanks for taking my call on {{call_date}}…
 
+If you'd rather everyone feed one shared campaign, leave `ALLO_ROUTES` unset
+and set `SMARTLEAD_CAMPAIGN_ID` instead — every number on the account then
+routes there.
+
 ### 3. Deploy
 
 ```bash
 vercel link
 vercel env add ALLO_API_KEY production
 vercel env add SMARTLEAD_API_KEY production
-vercel env add SMARTLEAD_CAMPAIGN_ID production
+vercel env add ALLO_ROUTES production        # +1555...:12345:Josh,+1555...:67890:Cayden
 vercel env add CRON_SECRET production        # openssl rand -hex 32
 vercel --prod
 ```
@@ -104,6 +118,33 @@ for all 365 days of the year.
 If you change `SEND_HOUR`, update both cron entries in `vercel.json` to match
 (`SEND_HOUR` in UTC, and that same hour +1).
 
+## Multiple reps
+
+**The Allo number is the identity.** A Call record has `from_number`,
+`to_number`, `type`, `start_date` and `summary` — and no field saying which
+team member placed it. So two reps can be told apart only if they dial from
+separate Allo numbers. If you share a line, nothing in the API can attribute a
+call to one of you, and this job can't either.
+
+**A prospect you both called gets one email, not two.** Dedupe runs across all
+reps, not within each. The most recent call wins, so the person who spoke to
+them last owns the follow-up. Those cases are listed under `collisions` in the
+run output and in the Slack summary, so "my prospect went into Cayden's
+campaign" is never a surprise.
+
+**A number nobody routed is flagged, not dropped silently.** On every run the
+routes are cross-checked against the numbers actually on the Allo account. A
+new rep's number that isn't in `ALLO_ROUTES` shows up as a warning (or falls
+back to `SMARTLEAD_CAMPAIGN_ID` if you've set one). A number in `ALLO_ROUTES`
+that isn't on the account is flagged as a probable typo.
+
+**Bad routing config fails loudly.** A malformed `ALLO_ROUTES` entry throws
+with the offending text quoted, rather than guessing — a typo here would send
+one rep's prospects into the other's campaign.
+
+`/api/health` prints the resolved routing table with each rep's campaign name,
+which is the fastest way to confirm the split is right.
+
 ## Behaviour worth knowing
 
 **Outbound only.** "People I called" means calls you placed. Set
@@ -145,11 +186,13 @@ api/
   health.js      read-only pre-flight
 lib/
   allo.js        Allo REST client, call paging, phone -> contact index
+  routes.js      Allo number -> rep -> Smartlead campaign mapping
   smartlead.js   Smartlead client, batched lead upload
-  pipeline.js    the job: calls -> people -> leads
+  pipeline.js    the job: calls -> people -> leads, deduped across reps
   time.js        Eastern day windows and the send-window guard
   notify.js      optional Slack summary
   auth.js        shared-secret check
 test/
-  time.test.js
+  time.test.js   timezone, DST, phone matching
+  routes.test.js route parsing and cross-rep dedupe
 ```
