@@ -1,0 +1,15 @@
+{
+  "name": "coldcall-follow-up",
+  "version": "1.0.0",
+  "description": "Every weekday at 4:30pm ET, pull the day's outbound calls from Allo and push those people into a Smartlead campaign as follow-up leads.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod",
+    "test": "node --test 'test/*.test.js'"
+  },
+  "engines": {
+    "node": ">=18.x"
+  }
+}
