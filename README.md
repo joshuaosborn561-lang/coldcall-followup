@@ -29,20 +29,28 @@ with these scopes:
 
 No write scopes are needed — this job never modifies anything in Allo.
 
-### 2. One Smartlead campaign per rep
+### 2. Smartlead campaign
 
-Each rep sends from their own mailbox, so each rep needs their own standing
-campaign. Create one per person (e.g. "Cold Call Follow-Up — Josh"), build the
-sequence, and grab the numeric ID from each campaign's URL.
-
-Then map Allo number → campaign:
+One standing campaign that everyone's calls feed:
 
 ```
-ALLO_ROUTES="+15550101010:12345:Josh,+15550202020:67890:Cayden"
+SMARTLEAD_CAMPAIGN_ID=3739316
+```
+
+Every Allo number on the account routes there — no per-rep config needed.
+
+Optionally label the numbers so the sequence can name who called:
+
+```
+ALLO_ROUTES="+15550101010:3739316:Josh,+15550202020:3739316:Cayden"
               number      campaign  label
 ```
 
-**Create these custom fields on every campaign** before the first run, or
+Same campaign either way; the labels just make `{{called_by}}` render "Josh"
+rather than a phone number. Point a rep at a *different* campaign ID and they
+send from their own mailbox with their own sequence instead.
+
+**Create these custom fields on the campaign** before the first run, or
 Smartlead silently drops the values:
 
 - `call_date`
@@ -57,9 +65,9 @@ Then you can write sequences like:
 
 > Hi {{first_name}}, thanks for taking my call on {{call_date}}…
 
-If you'd rather everyone feed one shared campaign, leave `ALLO_ROUTES` unset
-and set `SMARTLEAD_CAMPAIGN_ID` instead — every number on the account then
-routes there.
+or, in a shared campaign, attribute the call:
+
+> Hi {{first_name}}, thanks for speaking with {{called_by}} on {{call_date}}…
 
 ### 3. Deploy
 
@@ -67,7 +75,7 @@ routes there.
 vercel link
 vercel env add ALLO_API_KEY production
 vercel env add SMARTLEAD_API_KEY production
-vercel env add ALLO_ROUTES production        # +1555...:12345:Josh,+1555...:67890:Cayden
+vercel env add SMARTLEAD_CAMPAIGN_ID production   # 3739316
 vercel env add CRON_SECRET production        # openssl rand -hex 32
 vercel --prod
 ```
@@ -129,8 +137,15 @@ call to one of you, and this job can't either.
 **A prospect you both called gets one email, not two.** Dedupe runs across all
 reps, not within each. The most recent call wins, so the person who spoke to
 them last owns the follow-up. Those cases are listed under `collisions` in the
-run output and in the Slack summary, so "my prospect went into Cayden's
-campaign" is never a surprise.
+run output and in the Slack summary. This matters most in a shared campaign,
+where the same prospect arriving twice would otherwise mean two touches from
+the same company on the same day.
+
+**One shared campaign means one sender.** With everyone pointed at the same
+campaign ID, every follow-up goes out from whichever mailboxes are attached to
+that campaign, regardless of who made the call. Use `{{called_by}}` in the
+sequence to name the rep, or split reps onto separate campaign IDs if they
+should send from their own inboxes.
 
 **A number nobody routed is flagged, not dropped silently.** On every run the
 routes are cross-checked against the numbers actually on the Allo account. A

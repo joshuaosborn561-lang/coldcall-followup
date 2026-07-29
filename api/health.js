@@ -87,20 +87,19 @@ export default async function handler(req, res) {
       })
     );
 
-    const sharedCampaigns = campaigns
-      .map((c) => c.campaignId)
-      .filter((id, i, all) => all.indexOf(id) !== i);
+    // Several numbers feeding one campaign is the normal shared-campaign
+    // setup, so it is reported as a note rather than a warning.
+    const shared = [...new Set(campaigns.map((c) => c.campaignId))]
+      .map((id) => ({ campaignId: id, reps: campaigns.filter((c) => c.campaignId === id).map((c) => c.rep) }))
+      .filter((g) => g.reps.length > 1);
 
     return {
       mode,
       routes: campaigns,
-      warnings: [
-        ...warnings,
-        ...(sharedCampaigns.length
-          ? [`More than one number feeds campaign ${[...new Set(sharedCampaigns)].join(', ')} — ` +
-             'those reps share a sender.']
-          : []),
-      ],
+      sharedCampaigns: shared.map(
+        (g) => `${g.reps.join(' + ')} both send from campaign ${g.campaignId}`
+      ),
+      warnings,
       allCampaignsResolved: campaigns.every((c) => c.ok),
     };
   });
