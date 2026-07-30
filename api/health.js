@@ -14,7 +14,7 @@ import { resolveRoutes } from '../lib/routes.js';
 import { getCampaign } from '../lib/smartlead.js';
 import { TZ, isSendWindow, zonedDayWindow, zonedParts } from '../lib/time.js';
 
-const REQUIRED = ['ALLO_API_KEY', 'SMARTLEAD_API_KEY', 'CRON_SECRET'];
+const REQUIRED = ['ALLO_API_KEY', 'SMARTLEAD_API_KEY'];
 
 export default async function handler(req, res) {
   const auth = isAuthorized(req);
@@ -23,6 +23,9 @@ export default async function handler(req, res) {
   }
 
   const now = new Date();
+  const access = auth.open
+    ? 'OPEN — no CRON_SECRET set, anyone with this URL can read the prospect list and trigger a send'
+    : 'protected by CRON_SECRET';
   const et = zonedParts(now, TZ);
   const window = zonedDayWindow(null, TZ);
 
@@ -32,6 +35,7 @@ export default async function handler(req, res) {
   }
 
   const checks = {
+    access,
     env: {
       ok: missing.length === 0,
       missing,

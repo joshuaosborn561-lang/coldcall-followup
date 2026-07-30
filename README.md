@@ -111,26 +111,37 @@ vercel link
 vercel env add ALLO_API_KEY production
 vercel env add SMARTLEAD_API_KEY production
 vercel env add SMARTLEAD_CAMPAIGN_ID production   # 3739316
-vercel env add CRON_SECRET production        # openssl rand -hex 32
 vercel --prod
 ```
+
+Optionally close the endpoints with `vercel env add CRON_SECRET production`
+(`openssl rand -hex 32`) — see [Endpoint access](#endpoint-access).
 
 See `.env.example` for the optional knobs.
 
 ### 4. Verify before it runs unattended
 
 ```bash
-# Env complete? Both APIs reachable? Scopes right?
-curl "https://YOUR-APP.vercel.app/api/health?key=$CRON_SECRET"
+# Env complete? Both APIs reachable? Scopes right? Campaign resolves?
+curl "https://YOUR-APP.vercel.app/api/health"
 
-# Who WOULD be emailed today? Sends nothing.
-curl "https://YOUR-APP.vercel.app/api/run?key=$CRON_SECRET&dry=1"
+# Who WOULD be emailed today, with the exact merge fields? Sends nothing.
+curl "https://YOUR-APP.vercel.app/api/run?dry=1"
 
 # Same, for a past day.
-curl "https://YOUR-APP.vercel.app/api/run?key=$CRON_SECRET&dry=1&date=2026-07-28"
+curl "https://YOUR-APP.vercel.app/api/run?dry=1&date=2026-07-28"
 ```
 
 Only once a dry run looks right should you let the cron fire for real.
+
+(Append `&key=$CRON_SECRET` to each if you've set one.)
+
+You can also run it from a terminal without deploying:
+
+```bash
+ALLO_API_KEY=... SMARTLEAD_API_KEY=... SMARTLEAD_CAMPAIGN_ID=3739316 \
+  node scripts/local-run.js --dry
+```
 
 ## Endpoints
 
@@ -140,8 +151,29 @@ Only once a dry run looks right should you let the cron fire for real.
 | `GET /api/run` | Manual run, no clock guard. `?dry=1` to preview, `?date=YYYY-MM-DD` to backfill, `?notify=1` to also post to Slack. |
 | `GET /api/health` | Read-only pre-flight: env, Allo reachability + scopes, Smartlead campaign. |
 
-All three require `?key=$CRON_SECRET` or `Authorization: Bearer $CRON_SECRET`.
-Vercel Cron sends the bearer header automatically once `CRON_SECRET` is set.
+### Endpoint access
+
+Auth is opt-in, via `CRON_SECRET`:
+
+| `CRON_SECRET` | Behaviour |
+| --- | --- |
+| unset (default) | Endpoints are **open** to anyone with the deployment URL. |
+| set | Every endpoint requires `?key=…` or `Authorization: Bearer …`. Vercel Cron sends the header automatically. |
+
+Open is worth understanding before choosing it. `GET /api/run?dry=1` returns
+the day's full prospect list — names, emails, companies, job titles and call
+summaries — to anyone who requests it, and `GET /api/run` without `dry`
+pushes leads into the campaign for real. A Vercel production URL is not
+secret; it appears in deployment logs and browser history.
+
+Two ways to close it back up, whenever you want:
+
+- `vercel env add CRON_SECRET production` — a value from `openssl rand -hex 32`.
+  Cron keeps working with no further changes.
+- **Vercel Deployment Protection** (Project → Settings → Deployment
+  Protection). Gates every route behind your Vercel login, still lets cron
+  through, and there's no secret to manage. This is the easier option if the
+  query string was the annoying part.
 
 ## Why there are two cron entries
 
