@@ -131,4 +131,14 @@ server.listen(PORT, () => {
   setInterval(() => {
     tick().catch((err) => console.error('tick failed:', err));
   }, TICK_MS);
+
+  // BOOT_DRY_RUN=1 does one read-only pass at startup and logs the result.
+  // Useful where the deployment URL is not reachable but the logs are.
+  // It never writes to Smartlead.
+  if (/^(1|true|yes)$/i.test(process.env.BOOT_DRY_RUN || '')) {
+    console.log('BOOT_DRY_RUN — read-only preview, nothing will be sent');
+    runFollowUp({ dryRun: true })
+      .then((stats) => console.log('BOOT_DRY_RUN result:', JSON.stringify(stats, null, 2)))
+      .catch((err) => console.error('BOOT_DRY_RUN failed:', err.message, err.stack));
+  }
 });
