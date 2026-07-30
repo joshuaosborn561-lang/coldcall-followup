@@ -51,23 +51,58 @@ rather than a phone number. Point a rep at a *different* campaign ID and they
 send from their own mailbox with their own sequence instead.
 
 **Create these custom fields on the campaign** before the first run, or
-Smartlead silently drops the values:
+Smartlead accepts the lead and silently drops the values:
 
-- `call_date`
-- `call_summary`
-- `call_length_minutes`
-- `job_title`
-- `called_by`
-- `allo_call_id`
-- `allo_contact_id`
+`call_date` · `call_day` · `call_time` · `call_summary` ·
+`call_length_minutes` · `job_title` · `called_by` · `allo_call_id` ·
+`allo_contact_id`
 
 Then you can write sequences like:
 
-> Hi {{first_name}}, thanks for taking my call on {{call_date}}…
+> Hi {{first_name}}, thanks for taking my call {{call_day}} — you mentioned…
 
 or, in a shared campaign, attribute the call:
 
 > Hi {{first_name}}, thanks for speaking with {{called_by}} on {{call_date}}…
+
+## Merge field mapping
+
+What each Smartlead variable resolves to:
+
+| Smartlead field | Source | Example |
+| --- | --- | --- |
+| `{{first_name}}` | Allo contact `name`, normalized — **first name only** | `Tony` |
+| `{{last_name}}` | Allo contact `last_name`, or split out of `name` | `Rossi` |
+| `{{company_name}}` | Allo contact `company.name` | `Acme Corp` |
+| `{{website}}` | Allo contact `website` | `https://acme.com` |
+| `{{phone_number}}` | the number dialled on the call | `+15551234567` |
+| `{{call_date}}` | call `start_date`, local | `July 30` |
+| `{{call_day}}` | call `start_date`, local | `Thursday` |
+| `{{call_time}}` | call `start_date`, local | `2:23pm` |
+| `{{call_summary}}` | Allo's AI summary, ≤500 chars | `Discussed their VoIP contract…` |
+| `{{call_length_minutes}}` | call `length_in_minutes` | `4.2` |
+| `{{job_title}}` | Allo contact `job_title` | `Operations Director` |
+| `{{called_by}}` | the label on the rep's Allo number | `Josh` |
+| `{{allo_call_id}}` / `{{allo_contact_id}}` | traceability back to Allo | `call_abc123` |
+
+Two things this handles that a naive mapping would not:
+
+**`{{first_name}}` is the first name, not the full name.** Allo has separate
+`name` and `last_name` fields, but contacts imported from a list routinely
+arrive with the whole name in `name` and `last_name` empty. Passing that
+through renders *"Hi John Doe,"*. Names are split, and cleaned with the
+established SalesGlider rules — titles, credentials and generational suffixes
+stripped, `Anthony (Tony)` → `Tony`, `ANTHONY` → `Anthony`, `Jimmy` → `Jim`.
+Formal given names are never converted to nicknames (James stays James).
+
+**Dates are readable and local.** `start_date` arrives as
+`2026-07-30T18:23:11Z`; dropping that into a sequence renders the raw ISO
+string, and a 9pm call would be attributed to the wrong day. The three date
+fields are formatted in the rep's timezone.
+
+A contact with no first name in Allo is reported under
+`leadsWithoutFirstName` in the run output — use a Smartlead fallback like
+`{{first_name|there}}` so those don't render as *"Hi ,"*.
 
 ### 3. Deploy
 
@@ -201,6 +236,7 @@ api/
   health.js      read-only pre-flight
 lib/
   allo.js        Allo REST client, call paging, phone -> contact index
+  names.js       first/last name split and normalization for merge fields
   routes.js      Allo number -> rep -> Smartlead campaign mapping
   smartlead.js   Smartlead client, batched lead upload
   pipeline.js    the job: calls -> people -> leads, deduped across reps
@@ -210,4 +246,5 @@ lib/
 test/
   time.test.js   timezone, DST, phone matching
   routes.test.js route parsing and cross-rep dedupe
+  names.test.js  name splitting, normalization, date merge fields
 ```
