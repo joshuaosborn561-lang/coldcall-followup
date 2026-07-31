@@ -15,22 +15,18 @@ const NUMBER = process.env.PROBE_NUMBER || '';
 const n = encodeURIComponent(NUMBER);
 
 const CANDIDATES = [
-  // The prize: if a v2 call object embeds the contact (name/email) inline,
-  // the whole /contacts lookup -- and CONTACTS_READ -- becomes unnecessary.
-  NUMBER && `https://api.withallo.com/v2/api/calls?allo_number=${n}&page=0&size=2`,
-  NUMBER && `https://api.withallo.com/v1/api/calls?allo_number=${n}&page=0&size=2`,
+  // v2 renamed calls -> conversations, and it authorizes on the current key
+  // (it 400s on a missing param, not 403 on scope). If its payload embeds the
+  // contact's name/email, CONTACTS_READ stops being needed at all.
+  NUMBER && `https://api.withallo.com/v2/api/conversations?allo_number=${n}&page=0&size=3`,
+  NUMBER && `https://api.withallo.com/v2/api/conversations?allo_number=${n}&size=3&include=contact`,
+  NUMBER && `https://api.withallo.com/v2/api/conversations?allo_number=${n}&size=3&expand=contact`,
 
-  // Where did v2 put contacts? /v2/api/contacts is a 404.
-  'https://api.withallo.com/v2/api/people?page=0&size=1',
-  'https://api.withallo.com/v2/api/customers?page=0&size=1',
-  'https://api.withallo.com/v2/api/conversations?page=0&size=1',
-  'https://api.withallo.com/v2/api/messages?page=0&size=1',
-  'https://api.withallo.com/v2/api/contact?page=0&size=1',
-  'https://api.withallo.com/v2/api/contacts/search?page=0&size=1',
-
-  // Phone-filtered contact search, if one exists.
-  NUMBER && `https://api.withallo.com/v2/api/contacts?number=${n}`,
-  NUMBER && `https://api.withallo.com/v1/api/contacts?number=${n}`,
+  // Other v2 surfaces that may carry contact detail.
+  NUMBER && `https://api.withallo.com/v2/api/calls?allo_number=${n}&size=2`,
+  NUMBER && `https://api.withallo.com/v2/api/contacts?allo_number=${n}`,
+  'https://api.withallo.com/v2/api/me',
+  'https://api.withallo.com/v2/api/users',
 ].filter(Boolean);
 
 export async function probeAllo() {
@@ -46,7 +42,7 @@ export async function probeAllo() {
         headers: { Authorization: KEY, Accept: 'application/json' },
       });
       const text = await res.text();
-      console.log(`PROBE ${res.status} ${url}\n       ${text.slice(0, 400).replace(/\s+/g, ' ')}`);
+      console.log(`PROBE ${res.status} ${url}\n       ${text.slice(0, 1500).replace(/\s+/g, ' ')}`);
     } catch (err) {
       console.log(`PROBE ERR ${url}\n       ${err.message}`);
     }
