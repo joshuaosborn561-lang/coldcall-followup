@@ -140,6 +140,14 @@ server.listen(PORT, () => {
       .catch((err) => console.error('PROBE_ALLO failed:', err.message));
   }
 
+  // PROBE_ENRICH=1 exercises each enrichment provider once and dumps the raw
+  // responses, so their real request/response shapes can be verified.
+  if (/^(1|true|yes)$/i.test(process.env.PROBE_ENRICH || '')) {
+    import('./scripts/probe-enrich.js')
+      .then((m) => m.probeEnrich())
+      .catch((err) => console.error('PROBE_ENRICH failed:', err.message));
+  }
+
   // BOOT_DRY_RUN=1 does one read-only pass at startup and logs the result.
   // Useful where the deployment URL is not reachable but the logs are.
   // It never writes to Smartlead.
