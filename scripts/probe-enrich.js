@@ -75,20 +75,26 @@ export async function probeEnrich() {
     }
   } else console.log('PE AI Ark: no key');
 
-  // --- getleads --- app.getleads.io is a Next.js app, and Next serves API
-  // routes under /api/*, so the MCP docs' /api/v1/enrich/* paths probably live
-  // there rather than on the non-resolving api.getleads.io.
+  // --- getleads --- base confirmed: app.getleads.io/api/v1, Bearer auth.
+  // from-linkedin works but needs a LinkedIn URL; Allo gives name + domain,
+  // so find the path that takes those.
   if (GETLEADS) {
-    for (const base of ['https://app.getleads.io', 'https://www.getleads.io']) {
-      await hit(`GL ${base} from-linkedin`, `${base}/api/v1/enrich/from-linkedin`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${GETLEADS}` },
-        body: { items: [{ linkedin_url: 'https://www.linkedin.com/in/williamhgates' }] },
-      });
-      await hit(`GL ${base} me`, `${base}/api/v1/me`, {
-        headers: { Authorization: `Bearer ${GETLEADS}` },
-      });
+    const B = 'https://app.getleads.io/api/v1';
+    const H = { Authorization: `Bearer ${GETLEADS}` };
+    const person = { first_name: TARGET.first_name, last_name: TARGET.last_name, domain: TARGET.domain };
+
+    for (const [label, path, body] of [
+      ['contacts/search', '/contacts/search', { company_domain: TARGET.domain, limit: 2 }],
+      ['contacts/count', '/contacts/count', { company_domain: TARGET.domain }],
+      ['colleagues-by-domain', '/enrich/colleagues-by-domain', { domain: TARGET.domain, limit: 2 }],
+      ['decision-makers', '/lookup/decision-makers', { domain: TARGET.domain, limit: 2 }],
+      ['enrich/person', '/enrich/person', { items: [person] }],
+      ['enrich/find-email', '/enrich/find-email', person],
+      ['enrich/from-name', '/enrich/from-name', { items: [person] }],
+    ]) {
+      await hit(`GL ${label}`, `${B}${path}`, { method: 'POST', headers: H, body });
     }
+    await hit('GL columns', `${B}/contacts/columns`, { headers: H });
   } else console.log('PE getleads: no key');
 
   console.log('PE done');
