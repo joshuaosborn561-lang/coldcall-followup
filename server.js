@@ -17,10 +17,13 @@ import healthHandler from './api/health.js';
 import runHandler from './api/run.js';
 import { notifySlack } from './lib/notify.js';
 import { runFollowUp } from './lib/pipeline.js';
-import { SEND_HOUR, TZ, isWeekend, zonedParts } from './lib/time.js';
+import { SEND_HOUR, TZ, isWeekend, weekendBacklog, zonedParts } from './lib/time.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const SEND_MINUTE = Number(process.env.SEND_MINUTE ?? 30);
+// Monday-morning slot for the Friday-through-Sunday backlog.
+const BACKLOG_HOUR = Number(process.env.BACKLOG_HOUR ?? 8);
+const BACKLOG_MINUTE = Number(process.env.BACKLOG_MINUTE ?? 0);
 const TICK_MS = 30_000;
 
 const ROUTES = {
@@ -54,7 +57,11 @@ const server = createServer(async (req, res) => {
       ok: true,
       service: 'coldcall-follow-up',
       localTime: `${et.date} ${String(et.hour).padStart(2, '0')}:${String(et.minute).padStart(2, '0')} ${TZ}`,
-      nextSend: `${String(SEND_HOUR).padStart(2, '0')}:${String(SEND_MINUTE).padStart(2, '0')} ${TZ} daily`,
+      schedule: {
+        daily: `${pad(SEND_HOUR)}:${pad(SEND_MINUTE)} ${TZ}, Mon-Thu`,
+        weekendBacklog: `Mon ${pad(BACKLOG_HOUR)}:${pad(BACKLOG_MINUTE)} ${TZ} covers Fri-Sun`,
+        friday: 'held until Monday morning',
+      },
       lastScheduledRun,
     });
   }
@@ -74,33 +81,67 @@ const server = createServer(async (req, res) => {
 let lastFiredDate = null; // ET calendar date of the last scheduled run
 let lastScheduledRun = null; // summary of it, surfaced on /
 
+const pad = (n) => String(n).padStart(2, '0');
+
 function skipWeekends() {
   const raw = process.env.SKIP_WEEKENDS;
   if (raw === undefined) return true;
   return /^(1|true|yes)$/i.test(raw.trim());
 }
 
+/**
+ * Two daily triggers:
+ *
+ *   Mon-Thu 16:30  send that day's voicemails.
+ *   Fri     16:30  skipped -- a Friday-afternoon follow-up lands in a weekend
+ *                  inbox and goes stale before Monday.
+ *   Mon     08:00  send the Friday-through-Sunday backlog.
+ *
+ * Monday therefore fires twice: 08:00 for last week's tail, 16:30 for today.
+ */
 async function tick() {
   const now = new Date();
   const et = zonedParts(now, TZ);
 
-  if (et.hour !== SEND_HOUR || et.minute < SEND_MINUTE) return;
-  if (lastFiredDate === et.date) return; // already ran today
+  const isMonday = et.weekday === 'Mon';
+  const isFriday = et.weekday === 'Fri';
 
-  lastFiredDate = et.date; // claim the day before awaiting, so a slow run cannot double-fire
+  const atBacklogTime = isMonday && et.hour === BACKLOG_HOUR && et.minute >= BACKLOG_MINUTE;
+  const atDailyTime = et.hour === SEND_HOUR && et.minute >= SEND_MINUTE;
 
-  if (skipWeekends() && isWeekend(now, TZ)) {
-    lastScheduledRun = { date: et.date, skipped: 'weekend' };
-    console.log(`[${et.date}] weekend — skipped`);
-    return;
+  if (!atBacklogTime && !atDailyTime) return;
+
+  // Monday runs twice, so the guard is keyed per slot, not per day.
+  const slot = atBacklogTime ? `${et.date}#backlog` : `${et.date}#daily`;
+  if (lastFiredDate === slot) return;
+  lastFiredDate = slot; // claim before awaiting, so a slow run cannot double-fire
+
+  if (atDailyTime && !atBacklogTime) {
+    if (skipWeekends() && isWeekend(now, TZ)) {
+      lastScheduledRun = { date: et.date, skipped: 'weekend' };
+      console.log(`[${et.date}] weekend — skipped`);
+      return;
+    }
+    if (isFriday) {
+      lastScheduledRun = { date: et.date, skipped: 'friday — sends Monday 8am' };
+      console.log(`[${et.date}] Friday — holding until Monday 08:00 ${TZ}`);
+      return;
+    }
   }
 
-  console.log(`[${et.date}] ${et.hour}:${et.minute} ${TZ} — running follow-up`);
+  const range = atBacklogTime ? weekendBacklog(now, TZ) : null;
+  const label = range ? `${range.from}..${range.through}` : et.date;
+
+  console.log(
+    `[${label}] ${pad(et.hour)}:${pad(et.minute)} ${TZ} — running ${range ? 'weekend backlog' : 'daily'} follow-up`
+  );
   try {
-    const stats = await runFollowUp({ dryRun: false });
+    const stats = await runFollowUp(
+      range ? { dryRun: false, date: range.from, throughDate: range.through } : { dryRun: false }
+    );
     stats.slack = await notifySlack(stats);
     lastScheduledRun = {
-      date: et.date,
+      date: label,
       peopleCalled: stats.totals.peopleCalled,
       leadsPrepared: stats.totals.leadsPrepared,
       uploaded: stats.totals.uploaded,
@@ -108,8 +149,8 @@ async function tick() {
     };
     console.log(JSON.stringify(lastScheduledRun));
   } catch (err) {
-    lastScheduledRun = { date: et.date, error: err.message };
-    console.error(`[${et.date}] follow-up failed:`, err.message);
+    lastScheduledRun = { date: label, error: err.message };
+    console.error(`[${label}] follow-up failed:`, err.message);
     await notifySlack({
       date: et.date,
       dryRun: false,

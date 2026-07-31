@@ -54,48 +54,41 @@ async function hit(label, url, { method = 'GET', headers = {}, body } = {}) {
 export async function probeEnrich() {
   console.log(`PE target: ${TARGET.first_name} ${TARGET.last_name} @ ${TARGET.domain}`);
 
-  // --- LeadMagic ---
-  if (LEADMAGIC) {
-    await hit('LM /credits', 'https://api.leadmagic.io/credits', {
-      method: 'POST',
-      headers: { 'X-API-Key': LEADMAGIC },
-      body: {},
-    });
-    await hit('LM /email-finder', 'https://api.leadmagic.io/email-finder', {
-      method: 'POST',
-      headers: { 'X-API-Key': LEADMAGIC },
-      body: { first_name: TARGET.first_name, last_name: TARGET.last_name, domain: TARGET.domain },
-    });
-  } else console.log('PE LeadMagic: no key');
+  // LeadMagic is already verified working, and its email-finder costs a credit
+  // per call -- deliberately not probed again.
+  console.log('PE LeadMagic: already verified, skipped (costs a credit)');
 
-  // --- AI Ark --- base URL unknown; try the plausible ones and both auth schemes.
+  // --- AI Ark --- api.ai-ark.com resolves (nginx) but 404s on /v1/*.
+  // Walk likely prefixes; a 401/403 is a HIT (right path, wrong/missing auth).
   if (AI_ARK) {
-    for (const base of ['https://api.ai-ark.com', 'https://api.aiark.com', 'https://api.theaiark.com']) {
-      await hit(`ARK ${base} bearer`, `${base}/v1/people/search`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${AI_ARK}` },
-        body: { fullName: `${TARGET.first_name} ${TARGET.last_name}`, companyDomain: TARGET.domain, size: 1 },
+    for (const path of [
+      '/',
+      '/api/v1/people/search',
+      '/api/people/search',
+      '/v1/search/people',
+      '/api/v1/email-finder',
+      '/api/v1/email_finder',
+    ]) {
+      await hit(`ARK ${path}`, `https://api.ai-ark.com${path}`, {
+        headers: { Authorization: `Bearer ${AI_ARK}`, 'x-api-key': AI_ARK },
       });
     }
-    await hit('ARK x-api-key /email_finder', 'https://api.ai-ark.com/v1/email_finder', {
-      method: 'POST',
-      headers: { 'x-api-key': AI_ARK },
-      body: { fullName: `${TARGET.first_name} ${TARGET.last_name}`, companyDomain: TARGET.domain, size: 1 },
-    });
   } else console.log('PE AI Ark: no key');
 
-  // --- getleads --- MCP tool docs reference /api/v1/enrich/*; confirm the base.
+  // --- getleads --- app.getleads.io is a Next.js app, and Next serves API
+  // routes under /api/*, so the MCP docs' /api/v1/enrich/* paths probably live
+  // there rather than on the non-resolving api.getleads.io.
   if (GETLEADS) {
-    for (const base of ['https://api.getleads.io', 'https://app.getleads.io', 'https://getleads.io']) {
-      await hit(`GL ${base} health`, `${base}/api/v1/health`, {
+    for (const base of ['https://app.getleads.io', 'https://www.getleads.io']) {
+      await hit(`GL ${base} from-linkedin`, `${base}/api/v1/enrich/from-linkedin`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${GETLEADS}` },
+        body: { items: [{ linkedin_url: 'https://www.linkedin.com/in/williamhgates' }] },
+      });
+      await hit(`GL ${base} me`, `${base}/api/v1/me`, {
         headers: { Authorization: `Bearer ${GETLEADS}` },
       });
     }
-    await hit('GL colleagues-by-domain', 'https://api.getleads.io/api/v1/enrich/colleagues-by-domain', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${GETLEADS}` },
-      body: { domain: TARGET.domain, limit: 3 },
-    });
   } else console.log('PE getleads: no key');
 
   console.log('PE done');

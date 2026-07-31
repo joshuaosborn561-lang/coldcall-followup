@@ -1,33 +1,43 @@
 # Cold Call Follow-Up
 
-Every weekday at **4:30pm Eastern**, pull the day's outbound calls from
-[Allo](https://withallo.com) and push those people into a standing
-[Smartlead](https://smartlead.ai) campaign as follow-up leads — one campaign
-per rep, so the email comes from the person who actually made the call.
+Weekday afternoons, pull the day's outbound calls from
+[Allo](https://withallo.com), keep only the ones where a rep actually **left a
+voicemail**, and push those people into a standing
+[Smartlead](https://smartlead.ai) campaign as follow-up leads.
 
-Call someone at 10am, and by end of day they're in the sequence with the call
-date and Allo's AI summary attached as custom fields.
+Leave someone a voicemail at 10am, and by end of day they're in the sequence
+with the call date, who called, and Allo's AI summary as custom fields.
 
 ```
-per rep: Allo /calls on their number (today, OUTBOUND)
-   -> join phone number to Allo contact for the email address
-   -> dedupe by email ACROSS reps, newest call wins
-   -> POST /campaigns/{their campaign}/leads on Smartlead
+Allo v2 conversations/items/search  (today, OUTBOUND)
+   -> keep only calls where a voicemail was left
+   -> email: Allo CRM -> call audio extraction -> enrichment
+   -> dedupe by email, newest voicemail wins
+   -> POST /campaigns/3739316/leads on Smartlead
 ```
+
+Runs on Railway (`server.js`), which schedules in-process.
 
 ## Setup
 
 ### 1. Allo API key
 
 Generate at [web.withallo.com/settings/api](https://web.withallo.com/settings/api)
-with these scopes:
+with these **v2** scopes:
 
 | Scope | Used for |
 | --- | --- |
-| `CONVERSATIONS_READ` | reading the call log and listing your numbers |
-| `CONTACTS_READ` | reading contacts, which is where the email addresses live |
+| `CONVERSATIONS_READ` | the call log |
+| `CRM_READ` | person records (names, job titles, companies, websites) |
+| `PHONE_NUMBERS_READ` | listing the account's numbers |
+| `USERS_READ` | team members |
 
 No write scopes are needed — this job never modifies anything in Allo.
+
+> `CONTACTS_READ` was a **v1** scope and no longer exists. v1's `/contacts`
+> endpoint is unreachable with a current key regardless of what is granted.
+> `GET /v2/api/me` returns a key's real scopes plus a catalogue of every
+> endpoint and the scope it needs — check that first when anything 403s.
 
 ### 2. Smartlead campaign
 
@@ -37,25 +47,17 @@ One standing campaign that everyone's calls feed:
 SMARTLEAD_CAMPAIGN_ID=3739316
 ```
 
-Every Allo number on the account routes there — no per-rep config needed.
-
-Optionally label the numbers so the sequence can name who called:
-
-```
-ALLO_ROUTES="+15550101010:3739316:Josh,+15550202020:3739316:Cayden"
-              number      campaign  label
-```
-
-Same campaign either way; the labels just make `{{called_by}}` render "Josh"
-rather than a phone number. Point a rep at a *different* campaign ID and they
-send from their own mailbox with their own sequence instead.
+Every Allo number on the account routes there. Rep attribution is automatic —
+each call carries its own `user` object, so `{{called_by}}` renders "Joshua
+Osborn" or "Cayden Martini" with no configuration, and stays correct on a
+shared number.
 
 **Create these custom fields on the campaign** before the first run, or
 Smartlead accepts the lead and silently drops the values:
 
 `call_date` · `call_day` · `call_time` · `call_summary` ·
 `call_length_minutes` · `job_title` · `called_by` · `allo_call_id` ·
-`allo_contact_id`
+`allo_person_id`
 
 Then you can write sequences like:
 
@@ -71,19 +73,19 @@ What each Smartlead variable resolves to:
 
 | Smartlead field | Source | Example |
 | --- | --- | --- |
-| `{{first_name}}` | Allo contact `name`, normalized — **first name only** | `Tony` |
-| `{{last_name}}` | Allo contact `last_name`, or split out of `name` | `Rossi` |
-| `{{company_name}}` | Allo contact `company.name` | `Acme Corp` |
-| `{{website}}` | Allo contact `website` | `https://acme.com` |
-| `{{phone_number}}` | the number dialled on the call | `+15551234567` |
-| `{{call_date}}` | call `start_date`, local | `July 30` |
-| `{{call_day}}` | call `start_date`, local | `Thursday` |
-| `{{call_time}}` | call `start_date`, local | `2:23pm` |
-| `{{call_summary}}` | Allo's AI summary, ≤500 chars | `Discussed their VoIP contract…` |
-| `{{call_length_minutes}}` | call `length_in_minutes` | `4.2` |
-| `{{job_title}}` | Allo contact `job_title` | `Operations Director` |
-| `{{called_by}}` | the label on the rep's Allo number | `Josh` |
-| `{{allo_call_id}}` / `{{allo_contact_id}}` | traceability back to Allo | `call_abc123` |
+| `{{first_name}}` | Allo person `name`, normalized — **first name only** | `Amanda` |
+| `{{last_name}}` | Allo person `last_name`, or split out of `name` | `Alvarez` |
+| `{{company_name}}` | Allo `company.name`, else the enrichment provider's | `Omega Roofer` |
+| `{{website}}` | Allo person `website` | `http://omegaroofer.com` |
+| `{{phone_number}}` | the number dialled | `+18134539292` |
+| `{{call_date}}` | call `date`, local | `July 30` |
+| `{{call_day}}` | call `date`, local | `Thursday` |
+| `{{call_time}}` | call `date`, local | `2:23pm` |
+| `{{call_summary}}` | Allo's AI summary, ≤500 chars | `Cold outbound voicemail about…` |
+| `{{call_length_minutes}}` | call `duration` (seconds) ÷ 60 | `0.7` |
+| `{{job_title}}` | Allo person `job_title` | `Office Manager Co-owner` |
+| `{{called_by}}` | the call's own `user.name` | `Joshua Osborn` |
+| `{{allo_call_id}}` / `{{allo_person_id}}` | traceability back to Allo | `cll-16F950…` |
 
 Two things this handles that a naive mapping would not:
 
@@ -95,7 +97,7 @@ established SalesGlider rules — titles, credentials and generational suffixes
 stripped, `Anthony (Tony)` → `Tony`, `ANTHONY` → `Anthony`, `Jimmy` → `Jim`.
 Formal given names are never converted to nicknames (James stays James).
 
-**Dates are readable and local.** `start_date` arrives as
+**Dates are readable and local.** `date` arrives as
 `2026-07-30T18:23:11Z`; dropping that into a sequence renders the raw ISO
 string, and a 9pm call would be attributed to the wrong day. The three date
 fields are formatted in the rep's timezone.
@@ -104,32 +106,52 @@ A contact with no first name in Allo is reported under
 `leadsWithoutFirstName` in the run output — use a Smartlead fallback like
 `{{first_name|there}}` so those don't render as *"Hi ,"*.
 
-### 3. Deploy
+### 3. Email enrichment
 
-```bash
-vercel link
-vercel env add ALLO_API_KEY production
-vercel env add SMARTLEAD_API_KEY production
-vercel env add SMARTLEAD_CAMPAIGN_ID production   # 3739316
-vercel --prod
+Allo's CRM holds names, job titles, companies and websites but **almost no
+email addresses** — so most people you leave a voicemail for need enriching
+from (first name, last name, company domain).
+
+| Provider | Env var | Status |
+| --- | --- | --- |
+| getleads | `GETLEADS_API_KEY` | disabled — REST base URL unknown |
+| AI Ark | `AI_ARK_API_KEY` | disabled — REST base URL unknown |
+| LeadMagic | `LEADMAGIC_API_KEY` | **verified working** |
+
+The waterfall stops at the first hit, so a lead costs one lookup, not three.
+Only addresses the provider itself calls deliverable are accepted.
+
+An unverified provider stays off unless `ENRICH_ALLOW_UNVERIFIED=true` —
+guessing an API shape from documentation is what produced the v1/v2 mistake
+above. `PROBE_ENRICH=1` exercises each provider once and logs raw responses.
+
+### 4. Deploy
+
+Deployed on Railway, project `coldcall-follow-up`, service `followup`. It
+builds from `main` and runs `npm start` (`server.js`), which schedules
+in-process. Set the variables in Railway → Variables:
+
+```
+ALLO_API_KEY  SMARTLEAD_API_KEY  SMARTLEAD_CAMPAIGN_ID  LEADMAGIC_API_KEY
 ```
 
-Optionally close the endpoints with `vercel env add CRON_SECRET production`
-(`openssl rand -hex 32`) — see [Endpoint access](#endpoint-access).
+Optionally set `CRON_SECRET` to close the endpoints — see
+[Endpoint access](#endpoint-access). See `.env.example` for the rest.
 
-See `.env.example` for the optional knobs.
+The `api/*.js` handlers also work as Vercel functions with `vercel.json`, but
+that path lacks the Friday/Monday logic (see Schedule).
 
-### 4. Verify before it runs unattended
+### 5. Verify before it runs unattended
 
 ```bash
 # Env complete? Both APIs reachable? Scopes right? Campaign resolves?
-curl "https://YOUR-APP.vercel.app/api/health"
+curl "https://followup-production-a954.up.railway.app/api/health"
 
 # Who WOULD be emailed today, with the exact merge fields? Sends nothing.
-curl "https://YOUR-APP.vercel.app/api/run?dry=1"
+curl "https://followup-production-a954.up.railway.app/api/run?dry=1"
 
 # Same, for a past day.
-curl "https://YOUR-APP.vercel.app/api/run?dry=1&date=2026-07-28"
+curl "https://followup-production-a954.up.railway.app/api/run?dry=1&date=2026-07-28"
 ```
 
 Only once a dry run looks right should you let the cron fire for real.
@@ -175,23 +197,44 @@ Two ways to close it back up, whenever you want:
   through, and there's no secret to manage. This is the easier option if the
   query string was the annoying part.
 
-## Why there are two cron entries
+## Schedule
 
-Vercel cron schedules are UTC only, and 4:30pm Eastern is a different UTC time
-in summer than in winter. `vercel.json` fires `/api/cron` twice a day:
+| When (Eastern) | What it sends |
+| --- | --- |
+| Mon–Thu 16:30 | that day's voicemails |
+| **Fri 16:30** | **nothing** — a Friday-afternoon follow-up lands in a weekend inbox |
+| **Mon 08:00** | the Friday-through-Sunday backlog |
+| Sat/Sun | nothing |
+
+Monday therefore fires twice: 08:00 for last week's tail, 16:30 for that day.
+The fire guard is keyed per slot rather than per day so both run.
+
+`BACKLOG_HOUR` / `BACKLOG_MINUTE` move the Monday slot; `SEND_HOUR` /
+`SEND_MINUTE` move the daily one.
+
+The backlog window spans three whole Eastern days, so it is 72 hours normally
+and 73 across the November DST change — `test/schedule.test.js` asserts both,
+along with the date arithmetic across the spring-forward Sunday.
+
+### Vercel and DST
+
+On Railway the schedule runs in-process (`server.js`) and reads the Eastern
+wall clock directly, so DST needs no special handling.
+
+On Vercel, cron is UTC-only and 4:30pm Eastern is a different UTC time in
+summer than in winter, so `vercel.json` fires `/api/cron` twice daily:
 
 | UTC | EDT (Mar–Nov) | EST (Nov–Mar) |
 | --- | --- | --- |
 | 20:30 | **16:30** ✅ | 15:30 — exits |
 | 21:30 | 17:30 — exits | **16:30** ✅ |
 
-The handler checks the actual Eastern hour and the wrong one returns
-`{"skipped": "outside send window"}`. Exactly one real run per day, year round,
-with no manual clock change in November. `test/time.test.js` asserts this holds
-for all 365 days of the year.
+The handler checks the real Eastern hour and the wrong one returns
+`{"skipped": "outside send window"}`.
 
-If you change `SEND_HOUR`, update both cron entries in `vercel.json` to match
-(`SEND_HOUR` in UTC, and that same hour +1).
+**Known gap:** the Friday-hold and Monday-backlog logic lives in the Railway
+scheduler only. `/api/cron` still sends every weekday including Friday, so the
+Vercel path is not currently equivalent. Railway is the deployed path.
 
 ## Multiple reps
 
