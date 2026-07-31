@@ -1,23 +1,22 @@
 /**
- * Endpoint probe. Runs inside the deployment, where Allo is reachable, and
- * prints responses so the API surface can be mapped from logs alone.
- *
+ * Endpoint probe. Runs inside the deployment, where Allo is reachable.
  * Enable with PROBE_ALLO=1.
  *
- * Allo's 400s are self-documenting -- they name the missing parameter and link
- * the docs -- so POSTing a deliberately incomplete body is a cheap way to learn
- * a schema without access to the documentation site.
+ * Allo's errors are self-documenting -- a 404 on /crm/people/{id} suggested
+ * "Search people with POST /v2/api/crm/people/search", and 400s name the
+ * missing parameter -- so probing with deliberately wrong bodies is an
+ * effective way to learn a schema without the docs site.
  */
 
 const KEY = process.env.ALLO_API_KEY;
-const NUMBER = process.env.PROBE_NUMBER || '';
-const CONTACT_ID = process.env.PROBE_CONTACT_ID || '';
+const NUMBER = process.env.PROBE_NUMBER || '+12149107558';
+const CONTACT_NUMBER = process.env.PROBE_CONTACT_NUMBER || '+17047056032';
 const CHUNK = 1200;
 
 function logBody(label, text) {
   if (!text) return console.log(`${label} <empty>`);
   const flat = text.replace(/\s+/g, ' ');
-  for (let i = 0; i < flat.length && i < CHUNK * 4; i += CHUNK) {
+  for (let i = 0; i < flat.length && i < CHUNK * 3; i += CHUNK) {
     console.log(`${label}[${i / CHUNK}] ${flat.slice(i, i + CHUNK)}`);
   }
 }
@@ -42,39 +41,41 @@ async function call(method, url, body) {
 export async function probeAllo() {
   if (!KEY) return console.log('PROBE_ALLO: ALLO_API_KEY not set');
 
-  const id = CONTACT_ID || 'con-16F7C063D889A47FEA10409F3267E2C6B6712D2C';
-
-  // Where does CRM_READ expose a person record, and does it carry an email?
-  const gets = [
-    `https://api.withallo.com/v2/api/crm/people/${id}`,
-    `https://api.withallo.com/v2/api/crm/people?page=0&size=2`,
-    `https://api.withallo.com/v2/api/crm/contacts/${id}`,
-    `https://api.withallo.com/v2/api/crm/people/${id}/notes`,
+  // The email source. Try several filter spellings; the errors will say which.
+  const peopleSearches = [
+    {},
+    { size: 2 },
+    { query: CONTACT_NUMBER },
+    { phone: CONTACT_NUMBER },
+    { number: CONTACT_NUMBER },
+    { phone_number: CONTACT_NUMBER },
+    { phones: [CONTACT_NUMBER] },
   ];
-  for (const url of gets) {
-    const r = await call('GET', url);
-    console.log(`PROBE ${r.status} GET ${url}`);
+  for (const body of peopleSearches) {
+    const r = await call('POST', 'https://api.withallo.com/v2/api/crm/people/search', body);
+    console.log(`PROBE ${r.status} POST /crm/people/search ${JSON.stringify(body)}`);
     logBody('  BODY', r.text);
   }
 
-  // Learn the search schema from its own validation errors, then from a result.
-  const searches = [
-    {},
-    { allo_number: NUMBER },
-    { allo_number: NUMBER, type: 'CALL', direction: 'OUTBOUND', size: 3 },
-    {
-      allo_number: NUMBER,
-      type: 'CALL',
-      direction: 'OUTBOUND',
-      start_date: '2026-07-30T04:00:00Z',
-      end_date: '2026-07-31T04:00:00Z',
-      size: 3,
-    },
-  ];
-  for (const body of searches) {
+  // Does the conversations view carry emails on its inline contacts?
+  const conv = await call(
+    'GET',
+    `https://api.withallo.com/v2/api/conversations?allo_number=${encodeURIComponent(NUMBER)}&size=2`
+  );
+  console.log(`PROBE ${conv.status} GET /conversations`);
+  logBody('  CONV', conv.text);
+
+  // Which date-filter spelling does items/search actually honour? The
+  // start_date/end_date pair was silently ignored (total_count unchanged).
+  for (const body of [
+    { allo_number: NUMBER, date_from: '2026-07-30T04:00:00Z', date_to: '2026-07-31T04:00:00Z', size: 1 },
+    { allo_number: NUMBER, from: '2026-07-30T04:00:00Z', to: '2026-07-31T04:00:00Z', size: 1 },
+    { allo_number: NUMBER, after: '2026-07-30T04:00:00Z', before: '2026-07-31T04:00:00Z', size: 1 },
+    { allo_number: NUMBER, start: '2026-07-30T04:00:00Z', end: '2026-07-31T04:00:00Z', size: 1 },
+  ]) {
     const r = await call('POST', 'https://api.withallo.com/v2/api/conversations/items/search', body);
-    console.log(`PROBE ${r.status} POST /conversations/items/search ${JSON.stringify(body)}`);
-    logBody('  BODY', r.text);
+    const m = /"total_count":(\d+)/.exec(r.text);
+    console.log(`PROBE ${r.status} dateFilter ${Object.keys(body).join(',')} total_count=${m?.[1] ?? '?'}`);
   }
 
   console.log('PROBE_ALLO: done');
