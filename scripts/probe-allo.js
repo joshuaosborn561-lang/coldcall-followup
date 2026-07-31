@@ -12,25 +12,25 @@
 const KEY = process.env.ALLO_API_KEY;
 const NUMBER = process.env.PROBE_NUMBER || '';
 
+const n = encodeURIComponent(NUMBER);
+
 const CANDIDATES = [
-  // Controls -- these are known to work, so they anchor what "good" looks like.
-  'https://api.withallo.com/v1/api/numbers',
-  NUMBER && `https://api.withallo.com/v1/api/calls?allo_number=${encodeURIComponent(NUMBER)}&page=0&size=1`,
+  // The prize: if a v2 call object embeds the contact (name/email) inline,
+  // the whole /contacts lookup -- and CONTACTS_READ -- becomes unnecessary.
+  NUMBER && `https://api.withallo.com/v2/api/calls?allo_number=${n}&page=0&size=2`,
+  NUMBER && `https://api.withallo.com/v1/api/calls?allo_number=${n}&page=0&size=2`,
 
-  // v1 contact lookups, plural and singular.
-  'https://api.withallo.com/v1/api/contacts?page=0&size=1',
-  'https://api.withallo.com/v1/api/contact?page=0&size=1',
+  // Where did v2 put contacts? /v2/api/contacts is a 404.
+  'https://api.withallo.com/v2/api/people?page=0&size=1',
+  'https://api.withallo.com/v2/api/customers?page=0&size=1',
+  'https://api.withallo.com/v2/api/conversations?page=0&size=1',
+  'https://api.withallo.com/v2/api/messages?page=0&size=1',
+  'https://api.withallo.com/v2/api/contact?page=0&size=1',
+  'https://api.withallo.com/v2/api/contacts/search?page=0&size=1',
 
-  // v2 -- the docs the user pointed at are /en/v2/, so the API may have moved.
-  'https://api.withallo.com/v2/api/contacts?page=0&size=1',
-  'https://api.withallo.com/v2/api/numbers',
-  'https://api.withallo.com/v2/contacts?page=0&size=1',
-  'https://api.withallo.com/api/v2/contacts?page=0&size=1',
-
-  // Does contact search accept a phone filter? That would remove the need to
-  // page the whole contact book.
-  NUMBER && `https://api.withallo.com/v1/api/contacts?number=${encodeURIComponent(NUMBER)}`,
-  NUMBER && `https://api.withallo.com/v1/api/contacts?search=${encodeURIComponent(NUMBER)}`,
+  // Phone-filtered contact search, if one exists.
+  NUMBER && `https://api.withallo.com/v2/api/contacts?number=${n}`,
+  NUMBER && `https://api.withallo.com/v1/api/contacts?number=${n}`,
 ].filter(Boolean);
 
 export async function probeAllo() {
