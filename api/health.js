@@ -1,45 +1,39 @@
 /**
- * Pre-flight check. Confirms env is complete, both APIs answer, the API key
- * has the scopes it needs, every routed number exists on the Allo account and
- * every routed Smartlead campaign resolves.
+ * Pre-flight check. Confirms env is complete, both APIs answer, the Allo key
+ * carries the scopes v2 needs, and the Smartlead campaign resolves.
  *
- *   GET /api/health?key=$CRON_SECRET
+ *   GET /api/health
  *
  * Read-only -- it never adds a lead.
  */
 
 import { isAuthorized } from '../lib/auth.js';
-import { listNumbers, searchContacts } from '../lib/allo.js';
-import { resolveRoutes } from '../lib/routes.js';
+import { getCapabilities, listNumbers, listUsers, searchPeople } from '../lib/allo.js';
 import { getCampaign } from '../lib/smartlead.js';
 import { TZ, isSendWindow, zonedDayWindow, zonedParts } from '../lib/time.js';
 
-const REQUIRED = ['ALLO_API_KEY', 'SMARTLEAD_API_KEY'];
+const REQUIRED = ['ALLO_API_KEY', 'SMARTLEAD_API_KEY', 'SMARTLEAD_CAMPAIGN_ID'];
+
+// v2 scope names. CONTACTS_READ was a v1 scope and no longer exists.
+const NEEDED_SCOPES = ['CONVERSATIONS_READ', 'CRM_READ', 'PHONE_NUMBERS_READ', 'USERS_READ'];
 
 export default async function handler(req, res) {
   const auth = isAuthorized(req);
-  if (!auth.ok) {
-    return res.status(401).json({ ok: false, error: `Unauthorized: ${auth.reason}` });
-  }
+  if (!auth.ok) return res.status(401).json({ ok: false, error: `Unauthorized: ${auth.reason}` });
 
   const now = new Date();
-  const access = auth.open
-    ? 'OPEN — no CRON_SECRET set, anyone with this URL can read the prospect list and trigger a send'
-    : 'protected by CRON_SECRET';
   const et = zonedParts(now, TZ);
   const window = zonedDayWindow(null, TZ);
-
   const missing = REQUIRED.filter((k) => !process.env[k]);
-  if (!process.env.ALLO_ROUTES && !process.env.SMARTLEAD_CAMPAIGN_ID) {
-    missing.push('ALLO_ROUTES or SMARTLEAD_CAMPAIGN_ID');
-  }
 
   const checks = {
-    access,
+    access: auth.open
+      ? 'OPEN — no CRON_SECRET set, anyone with this URL can read the prospect list and trigger a send'
+      : 'protected by CRON_SECRET',
     env: {
       ok: missing.length === 0,
       missing,
-      optionalSet: ['ALLO_ROUTES', 'SLACK_WEBHOOK_URL', 'INCLUDE_INBOUND_CALLS', 'MIN_CALL_MINUTES'].filter(
+      enrichmentProviders: ['GETLEADS_API_KEY', 'AI_ARK_API_KEY', 'LEADMAGIC_API_KEY'].filter(
         (k) => Boolean(process.env[k])
       ),
     },
@@ -53,63 +47,30 @@ export default async function handler(req, res) {
   };
 
   checks.allo = await probe(async () => {
-    const numbers = await listNumbers();
-    const contacts = await searchContacts({ page: 0, size: 1 });
+    const caps = await getCapabilities();
+    const scopes = caps.scopes || [];
+    const [numbers, users, people] = await Promise.all([listNumbers(), listUsers(), searchPeople({ page: 1, size: 1 })]);
     return {
-      numbersOnAccount: numbers.map((n) => ({ number: n.number, name: n.name ?? null })),
-      contactPagesAvailable: contacts.totalPages,
-      scopes: 'CONVERSATIONS_READ + CONTACTS_READ confirmed',
+      scopes,
+      missingScopes: NEEDED_SCOPES.filter((s) => !scopes.includes(s)),
+      team: caps.team?.name ?? null,
+      numbers: numbers.map((n) => n.number),
+      reps: users.map((u) => u.name),
+      peopleInCrm: people.totalCount,
     };
   });
 
-  // Routing is where a two-rep setup goes wrong, so it gets its own check:
-  // each rep's number must exist on the account and their campaign must load.
-  checks.routing = await probe(async () => {
-    const { routes, warnings, mode } = await resolveRoutes();
-    const campaigns = await Promise.all(
-      routes.map(async (route) => {
-        try {
-          const campaign = await getCampaign(route.campaignId);
-          return {
-            rep: route.label,
-            number: route.number,
-            campaignId: route.campaignId,
-            campaignName: campaign?.name ?? null,
-            campaignStatus: campaign?.status ?? null,
-            usingFallbackCampaign: Boolean(route.isFallback),
-            ok: true,
-          };
-        } catch (err) {
-          return {
-            rep: route.label,
-            number: route.number,
-            campaignId: route.campaignId,
-            ok: false,
-            error: err.message,
-          };
-        }
-      })
-    );
-
-    // Several numbers feeding one campaign is the normal shared-campaign
-    // setup, so it is reported as a note rather than a warning.
-    const shared = [...new Set(campaigns.map((c) => c.campaignId))]
-      .map((id) => ({ campaignId: id, reps: campaigns.filter((c) => c.campaignId === id).map((c) => c.rep) }))
-      .filter((g) => g.reps.length > 1);
-
+  checks.smartlead = await probe(async () => {
+    const campaign = await getCampaign();
     return {
-      mode,
-      routes: campaigns,
-      sharedCampaigns: shared.map(
-        (g) => `${g.reps.join(' + ')} both send from campaign ${g.campaignId}`
-      ),
-      warnings,
-      allCampaignsResolved: campaigns.every((c) => c.ok),
+      id: campaign?.id ?? process.env.SMARTLEAD_CAMPAIGN_ID,
+      name: campaign?.name ?? null,
+      status: campaign?.status ?? null,
     };
   });
 
   const ok =
-    checks.env.ok && checks.allo.ok && checks.routing.ok && checks.routing.allCampaignsResolved !== false;
+    checks.env.ok && checks.allo.ok && checks.smartlead.ok && (checks.allo.missingScopes?.length ?? 0) === 0;
   return res.status(ok ? 200 : 503).json({ ok, checks });
 }
 

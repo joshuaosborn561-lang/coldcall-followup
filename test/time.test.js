@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { isSendWindow, isWeekend, zonedDayWindow, zonedParts } from '../lib/time.js';
-import { findContact, phoneKeys } from '../lib/allo.js';
+import { findPerson as findContact, phoneKeys } from '../lib/allo.js';
 
 const ET = 'America/New_York';
 
