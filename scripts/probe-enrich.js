@@ -58,43 +58,48 @@ export async function probeEnrich() {
   // per call -- deliberately not probed again.
   console.log('PE LeadMagic: already verified, skipped (costs a credit)');
 
-  // --- AI Ark --- api.ai-ark.com resolves (nginx) but 404s on /v1/*.
-  // Walk likely prefixes; a 401/403 is a HIT (right path, wrong/missing auth).
+  // --- AI Ark --- the docs site is reachable from here even though the dev
+  // environment's egress policy blocks it. Pull the getting-started page and
+  // any machine-readable spec, and read the base URL out of the logs.
+  for (const url of [
+    'https://docs.ai-ark.com/docs/getting-started',
+    'https://docs.ai-ark.com/openapi.json',
+    'https://docs.ai-ark.com/llms.txt',
+  ]) {
+    await hit(`ARKDOC ${url}`, url);
+  }
   if (AI_ARK) {
-    for (const path of [
-      '/',
-      '/api/v1/people/search',
-      '/api/people/search',
-      '/v1/search/people',
-      '/api/v1/email-finder',
-      '/api/v1/email_finder',
+    for (const url of [
+      'https://api.ai-ark.com/api/v1/me',
+      'https://api.ai-ark.com/v1/me',
+      'https://app.ai-ark.com/api/v1/me',
     ]) {
-      await hit(`ARK ${path}`, `https://api.ai-ark.com${path}`, {
-        headers: { Authorization: `Bearer ${AI_ARK}`, 'x-api-key': AI_ARK },
-      });
+      await hit(`ARK ${url}`, url, { headers: { Authorization: `Bearer ${AI_ARK}`, 'x-api-key': AI_ARK } });
     }
   } else console.log('PE AI Ark: no key');
 
-  // --- getleads --- base confirmed: app.getleads.io/api/v1, Bearer auth.
-  // from-linkedin works but needs a LinkedIn URL; Allo gives name + domain,
-  // so find the path that takes those.
+  // --- getleads --- verify contacts/search with the field names from the
+  // MCP schema (domains[], require_email, email_status), against a person we
+  // know LeadMagic can resolve.
   if (GETLEADS) {
-    const B = 'https://app.getleads.io/api/v1';
-    const H = { Authorization: `Bearer ${GETLEADS}` };
-    const person = { first_name: TARGET.first_name, last_name: TARGET.last_name, domain: TARGET.domain };
-
-    for (const [label, path, body] of [
-      ['contacts/search', '/contacts/search', { company_domain: TARGET.domain, limit: 2 }],
-      ['contacts/count', '/contacts/count', { company_domain: TARGET.domain }],
-      ['colleagues-by-domain', '/enrich/colleagues-by-domain', { domain: TARGET.domain, limit: 2 }],
-      ['decision-makers', '/lookup/decision-makers', { domain: TARGET.domain, limit: 2 }],
-      ['enrich/person', '/enrich/person', { items: [person] }],
-      ['enrich/find-email', '/enrich/find-email', person],
-      ['enrich/from-name', '/enrich/from-name', { items: [person] }],
-    ]) {
-      await hit(`GL ${label}`, `${B}${path}`, { method: 'POST', headers: H, body });
-    }
-    await hit('GL columns', `${B}/contacts/columns`, { headers: H });
+    await hit('GL contacts/search', 'https://app.getleads.io/api/v1/contacts/search', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${GETLEADS}` },
+      body: {
+        first_name: TARGET.first_name,
+        last_name: TARGET.last_name,
+        domains: [TARGET.domain],
+        require_email: true,
+        email_status: ['VALID'],
+        limit: 1,
+      },
+    });
+    // Domain-only, in case the name filter is too strict.
+    await hit('GL domain-only', 'https://app.getleads.io/api/v1/contacts/search', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${GETLEADS}` },
+      body: { domains: [TARGET.domain], require_email: true, limit: 3 },
+    });
   } else console.log('PE getleads: no key');
 
   console.log('PE done');
