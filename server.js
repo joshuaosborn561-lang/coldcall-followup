@@ -132,6 +132,14 @@ server.listen(PORT, () => {
     tick().catch((err) => console.error('tick failed:', err));
   }, TICK_MS);
 
+  // PROBE_ALLO=1 prints the status of a set of candidate Allo endpoints, for
+  // working out the right base path from logs when the docs are unreachable.
+  if (/^(1|true|yes)$/i.test(process.env.PROBE_ALLO || '')) {
+    import('./scripts/probe-allo.js')
+      .then((m) => m.probeAllo())
+      .catch((err) => console.error('PROBE_ALLO failed:', err.message));
+  }
+
   // BOOT_DRY_RUN=1 does one read-only pass at startup and logs the result.
   // Useful where the deployment URL is not reachable but the logs are.
   // It never writes to Smartlead.
