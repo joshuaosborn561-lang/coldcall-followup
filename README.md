@@ -117,15 +117,13 @@ Order when Allo has no email: **getleads → AI Ark → LeadMagic**.
 | Provider | Env var | Status |
 | --- | --- | --- |
 | getleads | `GETLEADS_API_KEY` | **verified** — `app.getleads.io/api/v1/contacts/search` |
-| AI Ark | `AI_ARK_API_KEY` | unverified — skipped unless `ENRICH_ALLOW_UNVERIFIED=true` |
+| AI Ark | `AI_ARK_API_KEY` | **active** — people search + `/v2/people/export/single` (`X-TOKEN`) |
 | LeadMagic | `LEADMAGIC_API_KEY` | **verified** — `/email-finder` |
 
 The waterfall stops at the first hit, so a lead costs one lookup, not three.
 Only addresses the provider itself calls deliverable are accepted.
 
-An unverified provider stays off unless `ENRICH_ALLOW_UNVERIFIED=true` —
-guessing an API shape from documentation is what produced the v1/v2 mistake
-above. `PROBE_ENRICH=1` exercises each provider once and logs raw responses.
+`PROBE_ENRICH=1` exercises each provider once and logs raw responses.
 
 Allo CRM emails are normalized before upload: comma-joined values like
 `a@x.com,b@y.com` are split, invalid addresses dropped, and the address that
@@ -139,8 +137,7 @@ in-process. Set the variables in Railway → Variables:
 
 ```
 ALLO_API_KEY  SMARTLEAD_API_KEY  SMARTLEAD_CAMPAIGN_ID
-GETLEADS_API_KEY  LEADMAGIC_API_KEY
-# optional: AI_ARK_API_KEY  (+ ENRICH_ALLOW_UNVERIFIED=true once probed)
+GETLEADS_API_KEY  AI_ARK_API_KEY  LEADMAGIC_API_KEY
 ```
 
 Optionally set `CRON_SECRET` to close the endpoints — see
