@@ -61,7 +61,7 @@ export async function probeEnrich() {
 
   // --- AI Ark --- developer-portal base + X-TOKEN auth.
   if (AI_ARK) {
-    await hit('ARK credits', `${AI_ARK_BASE}/v1/credits`, {
+    await hit('ARK credits', `${AI_ARK_BASE}/v1/payments/credits`, {
       headers: { 'X-TOKEN': AI_ARK },
     });
 
