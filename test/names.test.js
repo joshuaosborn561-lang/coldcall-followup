@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { normalizeFirstName, normalizeLastName, splitContactName } from '../lib/names.js';
+import {
+  looksLikeCompanyName,
+  normalizeFirstName,
+  normalizeLastName,
+  splitContactName,
+} from '../lib/names.js';
 import { formatCallMoment } from '../lib/time.js';
 
-const first = (name, lastName) => splitContactName({ name, lastName }).firstName;
-const last = (name, lastName) => splitContactName({ name, lastName }).lastName;
+const first = (name, lastName, fallbackName) =>
+  splitContactName({ name, lastName, fallbackName }).firstName;
+const last = (name, lastName, fallbackName) =>
+  splitContactName({ name, lastName, fallbackName }).lastName;
 
 // --- the case that would put a surname in {{first_name}} ---------------------
 
@@ -123,6 +130,37 @@ test('normalizeLastName tidies without splitting', () => {
   assert.equal(normalizeLastName('van der Berg'), 'van der Berg');
   assert.equal(normalizeLastName('Smith Jr.'), 'Smith');
   assert.equal(normalizeLastName(''), '');
+});
+
+test('company labels are detected', () => {
+  assert.equal(looksLikeCompanyName('Serna Electrical Services Llc'), true);
+  assert.equal(looksLikeCompanyName('ACME Plumbing Inc.'), true);
+  assert.equal(looksLikeCompanyName('John Doe'), false);
+  assert.equal(looksLikeCompanyName('Anthony (Tony)'), false);
+});
+
+test('a company stuffed into Allo name does not become {{first_name}}', () => {
+  assert.deepEqual(splitContactName({ name: 'Serna Electrical Services Llc' }), {
+    firstName: '',
+    lastName: '',
+  });
+});
+
+test('call-audio person name wins when CRM name is a company', () => {
+  assert.deepEqual(
+    splitContactName({
+      name: 'Serna Electrical Services Llc',
+      fallbackName: 'Miguel Serna',
+    }),
+    { firstName: 'Miguel', lastName: 'Serna' }
+  );
+});
+
+test('a company leaked into last_name is dropped, first name kept', () => {
+  assert.deepEqual(splitContactName({ name: 'Patrick', lastName: 'Cliffhangers Construction LLC' }), {
+    firstName: 'Patrick',
+    lastName: '',
+  });
 });
 
 // --- call date merge fields -------------------------------------------------

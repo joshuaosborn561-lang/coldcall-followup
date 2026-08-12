@@ -8,8 +8,8 @@
  * Two phases:
  *   1. Cheap auth/balance calls -- confirm the key works and the auth header
  *      scheme is right, without spending a lookup credit.
- *   2. One real email lookup per provider against a known person from the
- *      Allo CRM (Amanda Alvarez @ omegaroofer.com).
+ *   2. One real email lookup per unverified / newly wired provider against a
+ *      known person from the Allo CRM (Amanda Alvarez @ omegaroofer.com).
  */
 
 const LEADMAGIC = process.env.LEADMAGIC_API_KEY;
@@ -24,6 +24,7 @@ const TARGET = {
 };
 
 const CHUNK = 900;
+const AI_ARK_BASE = 'https://api.ai-ark.com/api/developer-portal';
 
 function log(label, status, text) {
   const flat = String(text ?? '').replace(/\s+/g, ' ');
@@ -58,24 +59,25 @@ export async function probeEnrich() {
   // per call -- deliberately not probed again.
   console.log('PE LeadMagic: already verified, skipped (costs a credit)');
 
-  // --- AI Ark --- the docs site is reachable from here even though the dev
-  // environment's egress policy blocks it. Pull the getting-started page and
-  // any machine-readable spec, and read the base URL out of the logs.
-  for (const url of [
-    'https://docs.ai-ark.com/docs/getting-started',
-    'https://docs.ai-ark.com/openapi.json',
-    'https://docs.ai-ark.com/llms.txt',
-  ]) {
-    await hit(`ARKDOC ${url}`, url);
-  }
+  // --- AI Ark --- developer-portal base + X-TOKEN auth.
   if (AI_ARK) {
-    for (const url of [
-      'https://api.ai-ark.com/api/v1/me',
-      'https://api.ai-ark.com/v1/me',
-      'https://app.ai-ark.com/api/v1/me',
-    ]) {
-      await hit(`ARK ${url}`, url, { headers: { Authorization: `Bearer ${AI_ARK}`, 'x-api-key': AI_ARK } });
-    }
+    await hit('ARK credits', `${AI_ARK_BASE}/v1/payments/credits`, {
+      headers: { 'X-TOKEN': AI_ARK },
+    });
+
+    const fullName = `${TARGET.first_name} ${TARGET.last_name}`;
+    await hit('ARK people search', `${AI_ARK_BASE}/v1/people`, {
+      method: 'POST',
+      headers: { 'X-TOKEN': AI_ARK },
+      body: {
+        page: 0,
+        size: 3,
+        account: { domain: { any: { include: [TARGET.domain] } } },
+        contact: {
+          fullName: { any: { include: { mode: 'SMART', content: [fullName] } } },
+        },
+      },
+    });
   } else console.log('PE AI Ark: no key');
 
   // --- getleads --- verify contacts/search with the field names from the
