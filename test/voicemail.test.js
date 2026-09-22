@@ -1,134 +1,134 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { classifyVoicemail, shouldFollowUp } from '../lib/voicemail.js';
+import { classifyFollowUp, shouldFollowUp } from '../lib/voicemail.js';
 
 const call = (over = {}) => ({ result: 'ANSWERED', duration: 40, tags: [], ...over });
 
-// Summaries below are verbatim from the live Allo account.
+// Summaries marked "live" are verbatim from the Allo account.
 
-test('a left voicemail is recognised', () => {
-  const v = classifyVoicemail(
+test('a left voicemail is a follow-up', () => {
+  const v = classifyFollowUp(
     call({ summary: 'Cold outbound voicemail about booking more commercial meetings and potential fit.' })
   );
-  assert.equal(v.left, true);
-  assert.equal(v.confidence, 'high');
+  assert.equal(v.kind, 'voicemail');
+  assert.equal(shouldFollowUp(call({ summary: 'Left a voicemail regarding commercial roofing leads.' })).include, true);
 });
 
-test('"no message left" is not a follow-up, even though it says voicemail', () => {
+test('hitting voicemail still follows up when no message was left', () => {
   for (const summary of [
     'Outbound call to a new contact reached voicemail; no message left.',
     'Outbound call to unknown contact ended with voicemail greeting; no message left.',
     'Called and reached voicemail without leaving a message.',
     'Reached voicemail but did not leave a message.',
+    'Outbound call to Diaz from Sakesglider; reached voicemail.',
   ]) {
-    const v = classifyVoicemail(call({ summary }));
-    assert.equal(v.left, false, summary);
+    const v = classifyFollowUp(call({ summary }));
+    assert.equal(v.kind, 'voicemail', summary);
+    assert.equal(shouldFollowUp(call({ summary })).include, true, summary);
   }
 });
 
-test('a call that never connected is never a voicemail', () => {
-  const v = classifyVoicemail(call({ result: 'CLOSED', summary: 'Outbound call.', duration: 39 }));
-  assert.equal(v.left, false);
-  assert.match(v.reason, /never connected/);
+test('a call that never connected is included', () => {
+  const v = classifyFollowUp(call({ result: 'CLOSED', summary: 'Outbound call.', duration: 39 }));
+  assert.equal(v.kind, 'no_connect');
+  assert.equal(shouldFollowUp(call({ result: 'CLOSED', summary: 'Outbound call.', duration: 39 })).include, true);
 });
 
-test('an explicit tag beats every inference', () => {
-  const left = classifyVoicemail(call({ tags: ['voicemail'], summary: 'no message left' }));
-  assert.equal(left.left, true, 'tag wins over summary');
-
-  const notLeft = classifyVoicemail(call({ tags: ['no_voicemail'], summary: 'left a voicemail about pricing' }));
-  assert.equal(notLeft.left, false);
+test('unanswered / busy / failed results are included', () => {
+  for (const result of ['FAILED', 'BUSY', 'NO_ANSWER', 'UNANSWERED', 'MISSED']) {
+    const v = classifyFollowUp(call({ result, summary: '', duration: 12 }));
+    assert.equal(v.kind, 'no_connect', result);
+    assert.equal(shouldFollowUp(call({ result, summary: '', duration: 12 })).include, true, result);
+  }
 });
 
-test('unrelated tags do not interfere', () => {
-  const v = classifyVoicemail(call({ tags: ['to_call_back', 'not_interested'], summary: 'left a voicemail about roofing' }));
-  assert.equal(v.left, true);
+test('summary no-answer language is included even when result is ANSWERED', () => {
+  const v = classifyFollowUp(call({ summary: 'Outbound call rang through; no one picked up.', duration: 28 }));
+  assert.equal(v.kind, 'no_connect');
+  assert.equal(shouldFollowUp(call({ summary: 'Outbound call rang through; no one picked up.' })).include, true);
 });
 
-test('result=VOICEMAIL is honoured if Allo ever sends it', () => {
-  assert.equal(classifyVoicemail(call({ result: 'VOICEMAIL', summary: '' })).left, true);
+test('an explicit conversation tag excludes the call', () => {
+  const v = classifyFollowUp(call({ tags: ['conversation'], summary: 'reached voicemail' }));
+  assert.equal(v.kind, 'conversation');
+  assert.equal(shouldFollowUp(call({ tags: ['conversation'], summary: 'reached voicemail' })).include, false);
 });
 
-test('a live conversation is not a voicemail', () => {
-  const v = classifyVoicemail(
-    call({ summary: 'Outbound roofing call; caller sought availability after introducing themselves.' })
-  );
-  assert.equal(v.left, false);
+test('voicemail and no-answer tags include the call', () => {
+  assert.equal(shouldFollowUp(call({ tags: ['voicemail'], summary: 'talked about pricing' })).include, true);
+  assert.equal(shouldFollowUp(call({ tags: ['no_answer'], summary: '' })).include, true);
 });
 
-test('a short ambiguous "reached voicemail" is flagged uncertain, not assumed', () => {
-  // Under the assume-left threshold, so neither outcome is inferable.
-  const v = classifyVoicemail(call({ summary: 'Outbound call to Diaz from Sakesglider; reached voicemail.', duration: 25 }));
-  assert.equal(v.left, null, 'must not guess either way');
+test('result=VOICEMAIL is included if Allo ever sends it', () => {
+  const v = classifyFollowUp(call({ result: 'VOICEMAIL', summary: '' }));
+  assert.equal(v.kind, 'voicemail');
+  assert.equal(shouldFollowUp(call({ result: 'VOICEMAIL', summary: '' })).include, true);
 });
 
-test('a short call that only mentions voicemail is treated as no message', () => {
-  const v = classifyVoicemail(call({ summary: 'Outbound call; reached voicemail.', duration: 9 }));
-  assert.equal(v.left, false);
+test('a live conversation is not a follow-up', () => {
+  const summary = 'Outbound roofing call; caller sought availability after introducing themselves.';
+  const v = classifyFollowUp(call({ summary }));
+  assert.equal(v.kind, 'conversation');
+  assert.equal(shouldFollowUp(call({ summary })).include, false);
 });
 
-test('answered with no summary is uncertain', () => {
-  assert.equal(classifyVoicemail(call({ summary: '' })).left, null);
+test('spoke-with-the-prospect language is excluded', () => {
+  for (const summary of [
+    'Spoke with the owner about commercial roofing and they asked for a follow-up email.',
+    'Talked to the prospect; they were not interested in a meeting.',
+    'Had a conversation with Mike; discussed pricing and booked a meeting.',
+  ]) {
+    assert.equal(shouldFollowUp(call({ summary, duration: 180 })).include, false, summary);
+    assert.equal(classifyFollowUp(call({ summary })).kind, 'conversation', summary);
+  }
 });
 
-test('uncertain calls are excluded by default', () => {
-  const c = call({ summary: 'Outbound call to Diaz from Sakesglider; reached voicemail.', duration: 25 });
-  assert.equal(shouldFollowUp(c).include, false, 'not mailing is the cheaper mistake');
+test('gatekeeper / screen without an owner conversation is included', () => {
+  const summary = 'Reached the receptionist; gatekeeper would not put the owner on the line.';
+  const v = classifyFollowUp(call({ summary, duration: 45 }));
+  assert.equal(v.kind, 'no_connect');
+  assert.equal(shouldFollowUp(call({ summary })).include, true);
+});
+
+test('gatekeeper then a real owner conversation is excluded', () => {
+  const summary = 'Reached the receptionist, then transferred to the owner who said they already have a roofer.';
+  assert.equal(classifyFollowUp(call({ summary, duration: 90 })).kind, 'conversation');
+  assert.equal(shouldFollowUp(call({ summary, duration: 90 })).include, false);
+});
+
+test('a short answered call with no summary is treated as no-speak', () => {
+  const v = classifyFollowUp(call({ summary: '', duration: 9 }));
+  assert.equal(v.kind, 'no_connect');
+  assert.equal(shouldFollowUp(call({ summary: '', duration: 9 })).include, true);
+});
+
+test('a long answered call with no summary is excluded (may be a live talk)', () => {
+  const v = classifyFollowUp(call({ summary: '', duration: 95 }));
+  assert.equal(v.kind, 'uncertain');
+  assert.equal(shouldFollowUp(call({ summary: '', duration: 95 })).include, false);
 });
 
 test('uncertain calls can be opted in', () => {
-  const previous = process.env.VOICEMAIL_INCLUDE_UNCERTAIN;
-  process.env.VOICEMAIL_INCLUDE_UNCERTAIN = 'true';
+  const previous = process.env.FOLLOWUP_INCLUDE_UNCERTAIN;
+  process.env.FOLLOWUP_INCLUDE_UNCERTAIN = 'true';
   try {
-    const c = call({ summary: 'Outbound call to Diaz from Sakesglider; reached voicemail.', duration: 25 });
+    const c = call({ summary: '', duration: 95 });
     assert.equal(shouldFollowUp(c).include, true);
   } finally {
-    if (previous === undefined) delete process.env.VOICEMAIL_INCLUDE_UNCERTAIN;
-    else process.env.VOICEMAIL_INCLUDE_UNCERTAIN = previous;
+    if (previous === undefined) delete process.env.FOLLOWUP_INCLUDE_UNCERTAIN;
+    else process.env.FOLLOWUP_INCLUDE_UNCERTAIN = previous;
   }
 });
 
-test('a confirmed left voicemail is always included', () => {
-  const c = call({ summary: 'Left a voicemail regarding commercial roofing leads.' });
-  assert.equal(shouldFollowUp(c).include, true);
+test('transferred without voicemail language is treated as a conversation', () => {
+  const v = classifyFollowUp(call({ result: 'TRANSFERRED', summary: 'Outbound call transferred.', duration: 70 }));
+  assert.equal(v.kind, 'conversation');
+  assert.equal(shouldFollowUp(call({ result: 'TRANSFERRED', summary: 'Outbound call transferred.', duration: 70 })).include, false);
 });
 
-// --- duration-based inference ----------------------------------------------
-// Calibrated against a real day: 86 calls produced 18 "mentions voicemail, no
-// explicit outcome" cases ranging 24s-91s, nearly all of them real voicemails.
-
-test('a long call mentioning voicemail counts as a message left', () => {
-  for (const duration of [91, 85, 79, 70, 55, 43, 37]) {
-    const v = classifyVoicemail(call({ summary: 'Outbound call; reached voicemail.', duration }));
-    assert.equal(v.left, true, `${duration}s should count as a voicemail`);
-  }
-});
-
-test('a short call mentioning voicemail stays uncertain or excluded', () => {
-  for (const duration of [24, 27, 30]) {
-    const v = classifyVoicemail(call({ summary: 'Outbound call; reached voicemail.', duration }));
-    assert.notEqual(v.left, true, `${duration}s is too short to assume a message`);
-  }
-  assert.equal(classifyVoicemail(call({ summary: 'reached voicemail.', duration: 10 })).left, false);
-});
-
-test('duration never overrides an explicit "no message left"', () => {
-  const v = classifyVoicemail(
-    call({ summary: 'Outbound call reached voicemail; no message left.', duration: 90 })
-  );
-  assert.equal(v.left, false, 'the explicit statement wins over the clock');
-});
-
-test('the assume-left threshold is tunable', () => {
-  const previous = process.env.VOICEMAIL_ASSUME_LEFT_SECONDS;
-  process.env.VOICEMAIL_ASSUME_LEFT_SECONDS = '80';
-  try {
-    // Re-import is not possible mid-process, so this documents intent: the
-    // constant is read at module load, so the env var must be set at boot.
-    assert.ok(true);
-  } finally {
-    if (previous === undefined) delete process.env.VOICEMAIL_ASSUME_LEFT_SECONDS;
-    else process.env.VOICEMAIL_ASSUME_LEFT_SECONDS = previous;
-  }
+test('duration never overrides an explicit voicemail hit', () => {
+  const v = classifyFollowUp(call({ summary: 'Outbound call reached voicemail; no message left.', duration: 8 }));
+  assert.equal(v.kind, 'voicemail');
+  assert.equal(shouldFollowUp(call({ summary: 'Outbound call reached voicemail; no message left.', duration: 8 })).include, true);
 });

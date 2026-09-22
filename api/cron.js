@@ -1,16 +1,17 @@
 /**
- * Scheduled entry point. Vercel fires this at 20:30 and 21:30 UTC daily; the
- * send-window guard lets through only the firing that is 4:30pm Eastern, so
- * the job stays put across the DST changeover. See lib/time.js.
+ * Scheduled entry point. Railway's in-process ticker hits the same pipeline
+ * this handler uses. `/api/cron` is also the one-shot path if the service is
+ * later switched to Railway cronSchedule (`npm run cron`).
  *
- * Bypass the guard for a one-off manual run with ?force=1 (still needs auth),
- * or just use /api/run.
+ * Default: weekday daytime only, last LOOKBACK_MINUTES of calls.
+ * Bypass the clock with ?force=1 (still needs auth), or use /api/run for a
+ * full-day backfill.
  */
 
 import { boolParam, isAuthorized } from '../lib/auth.js';
 import { notifySlack } from '../lib/notify.js';
 import { runFollowUp } from '../lib/pipeline.js';
-import { isSendWindow, isWeekend, zonedParts, TZ } from '../lib/time.js';
+import { LOOKBACK_MINUTES, TZ, isWeekdayDaytime, isWeekend, zonedParts } from '../lib/time.js';
 
 export default async function handler(req, res) {
   const auth = isAuthorized(req);
@@ -22,22 +23,21 @@ export default async function handler(req, res) {
   const et = zonedParts(now, TZ);
   const force = boolParam(req, 'force');
 
-  if (!force && !isSendWindow(now)) {
-    // The other of the two daily firings. Expected, not an error.
-    return res.status(200).json({
-      ok: true,
-      skipped: 'outside send window',
-      localTime: `${et.date} ${pad(et.hour)}:${pad(et.minute)} ${TZ}`,
-    });
-  }
-
   if (!force && skipWeekends() && isWeekend(now)) {
     return res.status(200).json({ ok: true, skipped: 'weekend', localTime: `${et.date} (${et.weekday})` });
   }
 
+  if (!force && !isWeekdayDaytime(now)) {
+    return res.status(200).json({
+      ok: true,
+      skipped: 'outside weekday daytime window',
+      localTime: `${et.date} ${pad(et.hour)}:${pad(et.minute)} ${TZ}`,
+    });
+  }
+
   try {
-    const stats = await runFollowUp({ dryRun: false });
-    stats.slack = await notifySlack(stats);
+    const stats = await runFollowUp({ dryRun: false, lookbackMinutes: LOOKBACK_MINUTES });
+    if (shouldNotify(stats)) stats.slack = await notifySlack(stats);
     return res.status(200).json({ ok: true, ...stats });
   } catch (err) {
     const payload = {
@@ -63,6 +63,15 @@ function skipWeekends() {
   const raw = process.env.SKIP_WEEKENDS;
   if (raw === undefined) return true;
   return /^(1|true|yes)$/i.test(raw.trim());
+}
+
+function shouldNotify(stats) {
+  const totals = stats.totals || {};
+  return (
+    (totals.leadsPrepared ?? 0) > 0 ||
+    (totals.uploaded ?? 0) > 0 ||
+    (stats.warnings || []).length > 0
+  );
 }
 
 function pad(n) {

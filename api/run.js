@@ -1,11 +1,14 @@
 /**
  * Manual entry point -- no clock guard, no weekend guard.
  *
- *   GET /api/run?key=$CRON_SECRET&dry=1              preview today, send nothing
- *   GET /api/run?key=$CRON_SECRET&dry=1&date=2026-07-28   preview another day
- *   GET /api/run?key=$CRON_SECRET                    actually push to Smartlead
+ *   GET /api/run?key=$CRON_SECRET&dry=1                    preview today
+ *   GET /api/run?key=$CRON_SECRET&dry=1&date=2026-07-28    preview a day
+ *   GET /api/run?key=$CRON_SECRET&dry=1&date=2026-07-28&through=2026-07-30
+ *   GET /api/run?key=$CRON_SECRET&dry=1&lookback=20         preview last 20m
+ *   GET /api/run?key=$CRON_SECRET                           push to Smartlead
  *
  * Start with dry=1. It returns the exact list of people who would be mailed.
+ * `date` (and optional `through`) is the full-day / backlog path.
  */
 
 import { boolParam, isAuthorized, queryParam } from '../lib/auth.js';
@@ -20,9 +23,16 @@ export default async function handler(req, res) {
 
   const dryRun = boolParam(req, 'dry');
   const date = queryParam(req, 'date') || null;
+  const throughDate = queryParam(req, 'through') || queryParam(req, 'throughDate') || null;
+  const lookbackRaw = queryParam(req, 'lookback');
+  const lookbackMinutes = lookbackRaw !== '' && date == null ? Number(lookbackRaw) : null;
+
+  if (lookbackMinutes != null && (!Number.isFinite(lookbackMinutes) || lookbackMinutes <= 0)) {
+    return res.status(400).json({ ok: false, error: `Invalid lookback "${lookbackRaw}"` });
+  }
 
   try {
-    const stats = await runFollowUp({ dryRun, date });
+    const stats = await runFollowUp({ dryRun, date, throughDate, lookbackMinutes });
     if (!dryRun && boolParam(req, 'notify')) {
       stats.slack = await notifySlack(stats);
     }

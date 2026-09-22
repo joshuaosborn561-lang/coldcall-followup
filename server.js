@@ -7,7 +7,8 @@
  *   npm start
  *
  * Routes /api/cron, /api/run and /api/health to the same handlers Vercel uses,
- * and runs the 4:30pm schedule in-process instead of via platform cron.
+ * and runs the weekday every-10-minute schedule in-process. Railway owns this
+ * ticker -- it does not depend on an external bot routine.
  */
 
 import { createServer } from 'node:http';
@@ -17,13 +18,19 @@ import healthHandler from './api/health.js';
 import runHandler from './api/run.js';
 import { notifySlack } from './lib/notify.js';
 import { runFollowUp } from './lib/pipeline.js';
-import { SEND_HOUR, TZ, isWeekend, weekendBacklog, zonedParts } from './lib/time.js';
+import {
+  DAYTIME_END_HOUR,
+  DAYTIME_START_HOUR,
+  LOOKBACK_MINUTES,
+  SCHEDULE_INTERVAL_MINUTES,
+  TZ,
+  isWeekdayDaytime,
+  isWeekend,
+  scheduleSlot,
+  zonedParts,
+} from './lib/time.js';
 
 const PORT = Number(process.env.PORT || 3000);
-const SEND_MINUTE = Number(process.env.SEND_MINUTE ?? 30);
-// Monday-morning slot for the Friday-through-Sunday backlog.
-const BACKLOG_HOUR = Number(process.env.BACKLOG_HOUR ?? 8);
-const BACKLOG_MINUTE = Number(process.env.BACKLOG_MINUTE ?? 0);
 const TICK_MS = 30_000;
 
 const ROUTES = {
@@ -57,11 +64,7 @@ const server = createServer(async (req, res) => {
       ok: true,
       service: 'coldcall-follow-up',
       localTime: `${et.date} ${String(et.hour).padStart(2, '0')}:${String(et.minute).padStart(2, '0')} ${TZ}`,
-      schedule: {
-        daily: `${pad(SEND_HOUR)}:${pad(SEND_MINUTE)} ${TZ}, Mon-Thu`,
-        weekendBacklog: `Mon ${pad(BACKLOG_HOUR)}:${pad(BACKLOG_MINUTE)} ${TZ} covers Fri-Sun`,
-        friday: 'held until Monday morning',
-      },
+      schedule: describeSchedule(),
       lastScheduledRun,
     });
   }
@@ -78,10 +81,19 @@ const server = createServer(async (req, res) => {
 
 // --- in-process schedule ----------------------------------------------------
 
-let lastFiredDate = null; // ET calendar date of the last scheduled run
-let lastScheduledRun = null; // summary of it, surfaced on /
+let lastFiredSlot = null;
+let lastScheduledRun = null;
 
 const pad = (n) => String(n).padStart(2, '0');
+
+function describeSchedule() {
+  return {
+    intervalMinutes: SCHEDULE_INTERVAL_MINUTES,
+    lookbackMinutes: LOOKBACK_MINUTES,
+    weekdays: `${pad(DAYTIME_START_HOUR)}:00–${pad(DAYTIME_END_HOUR)}:00 ${TZ}`,
+    weekends: 'skipped',
+  };
+}
 
 function skipWeekends() {
   const raw = process.env.SKIP_WEEKENDS;
@@ -90,59 +102,32 @@ function skipWeekends() {
 }
 
 /**
- * Two daily triggers:
- *
- *   Mon-Thu 16:30  send that day's voicemails.
- *   Fri     16:30  skipped -- a Friday-afternoon follow-up lands in a weekend
- *                  inbox and goes stale before Monday.
- *   Mon     08:00  send the Friday-through-Sunday backlog.
- *
- * Monday therefore fires twice: 08:00 for last week's tail, 16:30 for today.
+ * Every SCHEDULE_INTERVAL_MINUTES during weekday daytime, process only the
+ * last LOOKBACK_MINUTES of outbound calls. Overlap + Smartlead dedupe makes
+ * a missed tick or a restart safe without re-paging the whole day.
  */
 async function tick() {
   const now = new Date();
   const et = zonedParts(now, TZ);
 
-  const isMonday = et.weekday === 'Mon';
-  const isFriday = et.weekday === 'Fri';
+  if (skipWeekends() && isWeekend(now, TZ)) return;
+  if (!isWeekdayDaytime(now, TZ)) return;
 
-  const atBacklogTime = isMonday && et.hour === BACKLOG_HOUR && et.minute >= BACKLOG_MINUTE;
-  const atDailyTime = et.hour === SEND_HOUR && et.minute >= SEND_MINUTE;
+  const slot = scheduleSlot(now, TZ);
+  if (lastFiredSlot === slot) return;
+  lastFiredSlot = slot; // claim before awaiting, so a slow run cannot double-fire
 
-  if (!atBacklogTime && !atDailyTime) return;
-
-  // Monday runs twice, so the guard is keyed per slot, not per day.
-  const slot = atBacklogTime ? `${et.date}#backlog` : `${et.date}#daily`;
-  if (lastFiredDate === slot) return;
-  lastFiredDate = slot; // claim before awaiting, so a slow run cannot double-fire
-
-  if (atDailyTime && !atBacklogTime) {
-    if (skipWeekends() && isWeekend(now, TZ)) {
-      lastScheduledRun = { date: et.date, skipped: 'weekend' };
-      console.log(`[${et.date}] weekend — skipped`);
-      return;
-    }
-    if (isFriday) {
-      lastScheduledRun = { date: et.date, skipped: 'friday — sends Monday 8am' };
-      console.log(`[${et.date}] Friday — holding until Monday 08:00 ${TZ}`);
-      return;
-    }
-  }
-
-  const range = atBacklogTime ? weekendBacklog(now, TZ) : null;
-  const label = range ? `${range.from}..${range.through}` : et.date;
-
+  const label = `${et.date} ${pad(et.hour)}:${pad(et.minute)}`;
   console.log(
-    `[${label}] ${pad(et.hour)}:${pad(et.minute)} ${TZ} — running ${range ? 'weekend backlog' : 'daily'} follow-up`
+    `[${label} ${TZ}] running incremental follow-up (lookback ${LOOKBACK_MINUTES}m)`
   );
   try {
-    const stats = await runFollowUp(
-      range ? { dryRun: false, date: range.from, throughDate: range.through } : { dryRun: false }
-    );
-    stats.slack = await notifySlack(stats);
+    const stats = await runFollowUp({ dryRun: false, lookbackMinutes: LOOKBACK_MINUTES });
+    if (shouldNotify(stats)) stats.slack = await notifySlack(stats);
     lastScheduledRun = {
-      date: label,
-      peopleCalled: stats.totals.peopleCalled,
+      date: stats.date,
+      mode: stats.mode,
+      eligibleCalls: stats.totals.eligibleCalls,
       leadsPrepared: stats.totals.leadsPrepared,
       uploaded: stats.totals.uploaded,
       warnings: stats.warnings,
@@ -154,7 +139,7 @@ async function tick() {
     await notifySlack({
       date: et.date,
       dryRun: false,
-      totals: { peopleCalled: 0, leadsPrepared: 0 },
+      totals: { peopleCalled: 0, eligibleCalls: 0, leadsPrepared: 0 },
       routes: [],
       skipped: [],
       warnings: [`Run failed: ${err.message}`],
@@ -162,12 +147,22 @@ async function tick() {
   }
 }
 
+function shouldNotify(stats) {
+  const totals = stats.totals || {};
+  return (
+    (totals.leadsPrepared ?? 0) > 0 ||
+    (totals.uploaded ?? 0) > 0 ||
+    (stats.warnings || []).length > 0
+  );
+}
+
 server.listen(PORT, () => {
   const et = zonedParts(new Date(), TZ);
   console.log(`coldcall-follow-up listening on :${PORT}`);
   console.log(
     `now ${et.date} ${et.hour}:${String(et.minute).padStart(2, '0')} ${TZ} — ` +
-      `sending daily at ${SEND_HOUR}:${String(SEND_MINUTE).padStart(2, '0')}`
+      `every ${SCHEDULE_INTERVAL_MINUTES}m, last ${LOOKBACK_MINUTES}m, ` +
+      `weekdays ${pad(DAYTIME_START_HOUR)}:00–${pad(DAYTIME_END_HOUR)}:00`
   );
   setInterval(() => {
     tick().catch((err) => console.error('tick failed:', err));
@@ -194,7 +189,7 @@ server.listen(PORT, () => {
   // It never writes to Smartlead.
   if (/^(1|true|yes)$/i.test(process.env.BOOT_DRY_RUN || '')) {
     console.log('BOOT_DRY_RUN — read-only preview, nothing will be sent');
-    runFollowUp({ dryRun: true })
+    runFollowUp({ dryRun: true, lookbackMinutes: LOOKBACK_MINUTES })
       .then((stats) => console.log('BOOT_DRY_RUN result:', JSON.stringify(stats, null, 2)))
       .catch((err) => console.error('BOOT_DRY_RUN failed:', err.message, err.stack));
   }
