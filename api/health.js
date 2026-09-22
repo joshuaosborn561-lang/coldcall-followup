@@ -10,7 +10,16 @@
 import { isAuthorized } from '../lib/auth.js';
 import { getCapabilities, listNumbers, listUsers, searchPeople } from '../lib/allo.js';
 import { getCampaign } from '../lib/smartlead.js';
-import { TZ, isSendWindow, zonedDayWindow, zonedParts } from '../lib/time.js';
+import {
+  DAYTIME_END_HOUR,
+  DAYTIME_START_HOUR,
+  LOOKBACK_MINUTES,
+  SCHEDULE_INTERVAL_MINUTES,
+  TZ,
+  isWeekdayDaytime,
+  zonedDayWindow,
+  zonedParts,
+} from '../lib/time.js';
 
 const REQUIRED = ['ALLO_API_KEY', 'SMARTLEAD_API_KEY', 'SMARTLEAD_CAMPAIGN_ID'];
 
@@ -41,7 +50,12 @@ export default async function handler(req, res) {
       utc: now.toISOString(),
       local: `${et.date} ${pad(et.hour)}:${pad(et.minute)} (${et.weekday})`,
       timezone: TZ,
-      inSendWindowNow: isSendWindow(now),
+      inWeekdayDaytimeNow: isWeekdayDaytime(now),
+      schedule: {
+        intervalMinutes: SCHEDULE_INTERVAL_MINUTES,
+        lookbackMinutes: LOOKBACK_MINUTES,
+        daytimeHours: `${pad(DAYTIME_START_HOUR)}:00–${pad(DAYTIME_END_HOUR)}:00`,
+      },
       todayWindowUtc: { start: window.start.toISOString(), end: window.end.toISOString() },
     },
   };

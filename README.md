@@ -1,22 +1,26 @@
 # Cold Call Follow-Up
 
-Weekday afternoons, pull the day's outbound calls from
-[Allo](https://withallo.com), keep only the ones where a rep actually **left a
-voicemail**, and push those people into a standing
+Weekday daytime, about every **10 minutes**, pull recent outbound calls from
+[Allo](https://withallo.com), keep the ones where there was **no real
+conversation** with the prospect, and push those people into a standing
 [Smartlead](https://smartlead.ai) campaign as follow-up leads.
 
-Leave someone a voicemail at 10am, and by end of day they're in the sequence
-with the call date, who called, and Allo's AI summary as custom fields.
+Cayden does not leave voicemails. A no-connect, an unanswered ring, a hangup
+before a talk, a gatekeeper screen, or a voicemail / answering machine hit
+(message left or not) all get a follow-up. A live conversation with the
+prospect does not.
 
 ```
-Allo v2 conversations/items/search  (today, OUTBOUND)
-   -> keep only calls where a voicemail was left
+Allo v2 conversations/items/search  (last ~20 minutes, OUTBOUND)
+   -> keep no-connect + voicemail hits; drop real conversations
    -> email: Allo CRM -> call audio extraction -> enrichment
-   -> dedupe by email, newest voicemail wins
+   -> dedupe by email, newest eligible call wins
    -> POST /campaigns/3739316/leads on Smartlead
 ```
 
-Runs on Railway (`server.js`), which schedules in-process.
+Runs on Railway (`server.js`). The always-on process owns the 10-minute
+ticker — it does not depend on a Grok Bot routine. Smartlead dedupe makes
+overlapping lookbacks safe.
 
 ## Setup
 
@@ -109,7 +113,7 @@ A contact with no first name in Allo is reported under
 ### 3. Email enrichment
 
 Allo's CRM holds names, job titles, companies and websites but **almost no
-email addresses** — so most people you leave a voicemail for need enriching
+email addresses** — so most people we follow up with need enriching
 from (first name, last name, company domain).
 
 Order when Allo has no email: **getleads → AI Ark → LeadMagic**.
@@ -133,7 +137,8 @@ best matches the contact's name is preferred.
 
 Deployed on Railway, project `coldcall-follow-up`, service `followup`. It
 builds from `main` and runs `npm start` (`server.js`), which schedules
-in-process. Set the variables in Railway → Variables:
+in-process every 10 minutes on weekdays. Set the variables in Railway →
+Variables:
 
 ```
 ALLO_API_KEY  SMARTLEAD_API_KEY  SMARTLEAD_CAMPAIGN_ID
@@ -144,7 +149,7 @@ Optionally set `CRON_SECRET` to close the endpoints — see
 [Endpoint access](#endpoint-access). See `.env.example` for the rest.
 
 The `api/*.js` handlers also work as Vercel functions with `vercel.json`, but
-that path lacks the Friday/Monday logic (see Schedule).
+Railway is the deployed path and owns the 10-minute weekday ticker.
 
 ### 5. Verify before it runs unattended
 
@@ -152,10 +157,10 @@ that path lacks the Friday/Monday logic (see Schedule).
 # Env complete? Both APIs reachable? Scopes right? Campaign resolves?
 curl "https://followup-production-a954.up.railway.app/api/health"
 
-# Who WOULD be emailed today, with the exact merge fields? Sends nothing.
-curl "https://followup-production-a954.up.railway.app/api/run?dry=1"
+# Who WOULD be emailed for the last 20 minutes? Sends nothing.
+curl "https://followup-production-a954.up.railway.app/api/run?dry=1&lookback=20"
 
-# Same, for a past day.
+# Full calendar day (backfill / backlog).
 curl "https://followup-production-a954.up.railway.app/api/run?dry=1&date=2026-07-28"
 ```
 
@@ -174,8 +179,8 @@ ALLO_API_KEY=... SMARTLEAD_API_KEY=... SMARTLEAD_CAMPAIGN_ID=3739316 \
 
 | Route | What it does |
 | --- | --- |
-| `GET /api/cron` | Scheduled run. Enforces the 4:30pm ET window and the weekend skip. |
-| `GET /api/run` | Manual run, no clock guard. `?dry=1` to preview, `?date=YYYY-MM-DD` to backfill, `?notify=1` to also post to Slack. |
+| `GET /api/cron` | Scheduled incremental run. Weekday-daytime guard; last `LOOKBACK_MINUTES` only. |
+| `GET /api/run` | Manual run, no clock guard. `?dry=1` to preview, `?date=YYYY-MM-DD` (and optional `?through=`) for a full-day backfill, `?lookback=20` for the incremental window, `?notify=1` to also post to Slack. |
 | `GET /api/health` | Read-only pre-flight: env, Allo reachability + scopes, Smartlead campaign. |
 
 ### Endpoint access
@@ -204,42 +209,61 @@ Two ways to close it back up, whenever you want:
 
 ## Schedule
 
-| When (Eastern) | What it sends |
+Railway owns the recurring work. `npm start` (`server.js`) is always on so
+`/api/health` and `/api/run` keep answering, and an in-process ticker fires
+the job.
+
+| When | What it sends |
 | --- | --- |
-| Mon–Thu 16:30 | that day's voicemails |
-| **Fri 16:30** | **nothing** — a Friday-afternoon follow-up lands in a weekend inbox |
-| **Mon 08:00** | the Friday-through-Sunday backlog |
+| Mon–Fri, every 10 minutes, 08:00–20:00 `RUN_TIMEZONE` | outbound calls from the last **20 minutes** that were no-connect or voicemail |
 | Sat/Sun | nothing |
+| nights (before 08:00 / from 20:00) | nothing |
 
-Monday therefore fires twice: 08:00 for last week's tail, 16:30 for that day.
-The fire guard is keyed per slot rather than per day so both run.
+`America/New_York` (default) or `America/Chicago` are both fine. The lookback
+is a few minutes longer than the interval so one missed tick still overlaps.
+Smartlead dedupes against the campaign, so overlap does not double-enroll.
 
-`BACKLOG_HOUR` / `BACKLOG_MINUTE` move the Monday slot; `SEND_HOUR` /
-`SEND_MINUTE` move the daily one.
+Full-day / backlog remains a **manual** path:
 
-The backlog window spans three whole Eastern days, so it is 72 hours normally
-and 73 across the November DST change — `test/schedule.test.js` asserts both,
-along with the date arithmetic across the spring-forward Sunday.
+```
+GET /api/run?dry=1&date=2026-09-22
+GET /api/run?dry=1&date=2026-09-19&through=2026-09-21
+```
 
-### Vercel and DST
+Tunable env vars: `SCHEDULE_INTERVAL_MINUTES` (10), `LOOKBACK_MINUTES` (20),
+`DAYTIME_START_HOUR` (8), `DAYTIME_END_HOUR` (20), `RUN_TIMEZONE`,
+`SKIP_WEEKENDS`.
 
-On Railway the schedule runs in-process (`server.js`) and reads the Eastern
-wall clock directly, so DST needs no special handling.
+`test/schedule.test.js` and `test/time.test.js` cover the 10-minute slots, the
+20-minute lookback, weekday-daytime, weekend skip, and DST-safe day windows.
 
-On Vercel, cron is UTC-only and 4:30pm Eastern is a different UTC time in
-summer than in winter, so `vercel.json` fires `/api/cron` twice daily:
+### Railway dashboard
+
+No `cronSchedule` is set on service `followup` on purpose. Putting
+`*/10 * * * *` on this same service would turn it into a start-then-exit
+cron job and take the public URL down between runs.
+
+After this code is deployed, the in-process ticker is enough. Optional
+native-cron alternative: add a **second** Railway service (or change start
+only if you no longer need the HTTP API) with start command `npm run cron`
+and `cronSchedule` `*/10 * * * *`. `scripts/cron-run.js` is a one-shot that
+uses the same weekday + lookback guards.
+
+Do **not** drive this from a Grok Bot routine.
+
+### Vercel
+
+`vercel.json` still lists two daily UTC crons. `/api/cron` now runs the
+incremental lookback and skips nights/weekends, so the Vercel path is not a
+full-day send and is not the production schedule. Railway is. Historical
+DST table for those leftover crons:
 
 | UTC | EDT (Mar–Nov) | EST (Nov–Mar) |
 | --- | --- | --- |
-| 20:30 | **16:30** ✅ | 15:30 — exits |
-| 21:30 | 17:30 — exits | **16:30** ✅ |
+| 20:30 | 16:30 weekday daytime | 15:30 — skipped as outside daytime |
+| 21:30 | 17:30 weekday daytime | 16:30 weekday daytime |
 
-The handler checks the real Eastern hour and the wrong one returns
-`{"skipped": "outside send window"}`.
-
-**Known gap:** the Friday-hold and Monday-backlog logic lives in the Railway
-scheduler only. `/api/cron` still sends every weekday including Friday, so the
-Vercel path is not currently equivalent. Railway is the deployed path.
+Those leftover crons now run the 20-minute lookback, not a full day.
 
 ## Multiple reps
 
@@ -280,8 +304,9 @@ which is the fastest way to confirm the split is right.
 **Outbound only.** "People I called" means calls you placed. Set
 `INCLUDE_INBOUND_CALLS=true` to also follow up on people who called in.
 
-**Unanswered calls still count.** Someone who didn't pick up is exactly who you
-want to follow up with by email. Set `MIN_CALL_MINUTES` if you disagree.
+**No-connect and voicemail both count.** Someone who didn't pick up, or whose
+line hit a mailbox, is exactly who you want to follow up with by email. A
+real conversation with the prospect is excluded.
 
 **Emails come from Allo contacts.** A call record only carries a phone number,
 so the job joins that number to a contact to find the email. Numbers with no
@@ -311,8 +336,8 @@ vercel dev        # then hit http://localhost:3000/api/health?key=...
 
 ```
 api/
-  cron.js        scheduled entry, DST + weekend guards
-  run.js         manual entry, dry-run and date backfill
+  cron.js        scheduled incremental entry, weekday-daytime + lookback
+  run.js         manual entry, dry-run, date backfill, optional lookback
   health.js      read-only pre-flight
 lib/
   allo.js        Allo REST client, call paging, phone -> contact index
@@ -320,11 +345,13 @@ lib/
   routes.js      Allo number -> rep -> Smartlead campaign mapping
   smartlead.js   Smartlead client, batched lead upload
   pipeline.js    the job: calls -> people -> leads, deduped across reps
-  time.js        Eastern day windows and the send-window guard
+  time.js        day windows, 20-minute lookback, weekday-daytime guard
+  voicemail.js   no-connect / voicemail vs live-conversation classifier
   notify.js      optional Slack summary
   auth.js        shared-secret check
 test/
-  time.test.js   timezone, DST, phone matching
-  routes.test.js route parsing and cross-rep dedupe
+  time.test.js   timezone, DST, lookback, weekday-daytime
+  schedule.test.js  incremental lookback vs full-day, weekend skip
+  voicemail.test.js no-connect + voicemail vs live conversation
   names.test.js  name splitting, normalization, date merge fields
 ```

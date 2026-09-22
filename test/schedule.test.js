@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { shiftDate, weekendBacklog, zonedDayWindow, zonedParts } from '../lib/time.js';
+import {
+  LOOKBACK_MINUTES,
+  SCHEDULE_INTERVAL_MINUTES,
+  isWeekdayDaytime,
+  shiftDate,
+  weekendBacklog,
+  zonedDayWindow,
+  zonedLookbackWindow,
+  zonedParts,
+} from '../lib/time.js';
 
 const ET = 'America/New_York';
 
@@ -56,6 +65,21 @@ test('shiftDate walks Eastern days, not 24-hour blocks', () => {
   const monAfterDst = new Date('2026-03-09T12:00:00Z');
   assert.equal(shiftDate(monAfterDst, -1, ET), '2026-03-08');
   assert.equal(shiftDate(monAfterDst, -3, ET), '2026-03-06');
+});
+
+test('scheduled incremental runs use a short lookback, not a full day', () => {
+  assert.equal(SCHEDULE_INTERVAL_MINUTES, 10);
+  assert.equal(LOOKBACK_MINUTES, 20);
+  const now = new Date('2026-09-22T18:40:00Z');
+  const lookback = zonedLookbackWindow(LOOKBACK_MINUTES, ET, now);
+  const fullDay = zonedDayWindow('2026-09-22', ET);
+  assert.ok(lookback.end - lookback.start < fullDay.end - fullDay.start);
+  assert.equal((lookback.end - lookback.start) / 60000, 20);
+});
+
+test('the 10-minute ticker does not run on weekends', () => {
+  assert.equal(isWeekdayDaytime(new Date('2026-09-26T16:00:00Z'), ET), false); // Sat
+  assert.equal(isWeekdayDaytime(new Date('2026-09-27T16:00:00Z'), ET), false); // Sun
 });
 
 test('the backlog lands on the right dates across the DST changeover', () => {

@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { isSendWindow, isWeekend, zonedDayWindow, zonedParts } from '../lib/time.js';
+import {
+  isSendWindow,
+  isWeekdayDaytime,
+  isWeekend,
+  scheduleSlot,
+  zonedDayWindow,
+  zonedLookbackWindow,
+  zonedParts,
+} from '../lib/time.js';
 import { findPerson as findContact, phoneKeys } from '../lib/allo.js';
 
 const ET = 'America/New_York';
@@ -77,6 +85,50 @@ test('weekend detection uses Eastern, not UTC', () => {
   assert.equal(isWeekend(new Date('2026-07-25T20:30:00Z'), ET), true); // Sat ET
   assert.equal(isWeekend(new Date('2026-07-26T20:30:00Z'), ET), true); // Sun ET
   assert.equal(isWeekend(new Date('2026-07-27T20:30:00Z'), ET), false); // Mon ET
+});
+
+test('lookback window is exactly N minutes and newest-first friendly', () => {
+  const now = new Date('2026-09-22T18:40:00.000Z');
+  const w = zonedLookbackWindow(20, ET, now);
+  assert.equal(w.mode, 'lookback');
+  assert.equal(w.lookbackMinutes, 20);
+  assert.equal(w.end.toISOString(), '2026-09-22T18:40:00.000Z');
+  assert.equal(w.start.toISOString(), '2026-09-22T18:20:00.000Z');
+  assert.equal((w.end - w.start) / 60000, 20);
+});
+
+test('a 15-minute lookback stays 15 minutes across the DST change', () => {
+  // 2026-11-01 01:30 EST is after the 02:00->01:00 fallback.
+  const now = new Date('2026-11-01T06:30:00.000Z');
+  const w = zonedLookbackWindow(15, ET, now);
+  assert.equal((w.end - w.start) / 60000, 15);
+});
+
+test('invalid lookback is rejected', () => {
+  assert.throws(() => zonedLookbackWindow(0, ET), /lookback/);
+  assert.throws(() => zonedLookbackWindow(-5, ET), /lookback/);
+});
+
+test('weekday daytime is Mon-Fri 8:00-20:00 local', () => {
+  // Tuesday 14:53 ET
+  assert.equal(isWeekdayDaytime(new Date('2026-09-22T18:53:00Z'), ET), true);
+  // Tuesday 07:30 ET — before the daytime window
+  assert.equal(isWeekdayDaytime(new Date('2026-09-22T11:30:00Z'), ET), false);
+  // Tuesday 20:05 ET — after the daytime window
+  assert.equal(isWeekdayDaytime(new Date('2026-09-23T00:05:00Z'), ET), false);
+  // Saturday afternoon ET
+  assert.equal(isWeekdayDaytime(new Date('2026-09-26T18:00:00Z'), ET), false);
+  // Friday 16:30 ET still runs (no Friday hold on the incremental schedule)
+  assert.equal(isWeekdayDaytime(new Date('2026-09-25T20:30:00Z'), ET), true);
+});
+
+test('schedule slots bucket a day into 10-minute increments', () => {
+  const a = scheduleSlot(new Date('2026-09-22T18:51:00Z'), ET, 10); // 14:51 ET
+  const b = scheduleSlot(new Date('2026-09-22T18:59:00Z'), ET, 10); // 14:59 ET
+  const c = scheduleSlot(new Date('2026-09-22T19:00:00Z'), ET, 10); // 15:00 ET
+  assert.equal(a, b, 'same 10-minute slot');
+  assert.notEqual(b, c, 'next slot starts on the 10-minute mark');
+  assert.match(a, /^2026-09-22#\d+$/);
 });
 
 test('phone matching tolerates formatting differences', () => {
