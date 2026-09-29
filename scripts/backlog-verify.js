@@ -24,15 +24,9 @@ import { markResults } from '../lib/verdicts.js';
 
 const dry = process.argv.includes('--dry');
 const yes = process.argv.includes('--yes');
-const ALREADY_CONTACTED = new Set([
-  'STARTED',
-  'COMPLETED',
-  'BLOCKED',
-  'PAUSED',
-  'STOPPED',
-  'INPROGRESS',
-  'IN_PROGRESS',
-]);
+// Analytics "notStarted" / drafted maps to status STARTED on this campaign.
+// COMPLETED and BLOCKED have already been mailed (or bounced).
+const ALREADY_CONTACTED = new Set(['COMPLETED', 'BLOCKED', 'PAUSED', 'STOPPED', 'INPROGRESS', 'IN_PROGRESS']);
 
 if (!dry && !yes) {
   console.error('Pass --dry to preview, or --yes to remove REJECTED not-started leads.');
