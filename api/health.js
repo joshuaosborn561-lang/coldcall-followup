@@ -10,6 +10,8 @@
 import { isAuthorized } from '../lib/auth.js';
 import { getCapabilities, listNumbers, listUsers, searchPeople } from '../lib/allo.js';
 import { getCampaign } from '../lib/smartlead.js';
+import { verifierHealth } from '../lib/verifier.js';
+import { hasSupabaseVerdicts } from '../lib/verdicts.js';
 import {
   DAYTIME_END_HOUR,
   DAYTIME_START_HOUR,
@@ -45,6 +47,8 @@ export default async function handler(req, res) {
       enrichmentProviders: ['GETLEADS_API_KEY', 'AI_ARK_API_KEY', 'LEADMAGIC_API_KEY'].filter(
         (k) => Boolean(process.env[k])
       ),
+      verifierUrl: process.env.VERIFYFALL_URL || 'https://verifyfall-production.up.railway.app',
+      durableVerdicts: hasSupabaseVerdicts(),
     },
     clock: {
       utc: now.toISOString(),
@@ -83,8 +87,21 @@ export default async function handler(req, res) {
     };
   });
 
+  checks.verifier = await probe(async () => {
+    const health = await verifierHealth();
+    return {
+      ok: health?.ok === true,
+      service: health?.service || null,
+      durableVerdicts: hasSupabaseVerdicts(),
+    };
+  });
+
   const ok =
-    checks.env.ok && checks.allo.ok && checks.smartlead.ok && (checks.allo.missingScopes?.length ?? 0) === 0;
+    checks.env.ok &&
+    checks.allo.ok &&
+    checks.smartlead.ok &&
+    checks.verifier.ok &&
+    (checks.allo.missingScopes?.length ?? 0) === 0;
   return res.status(ok ? 200 : 503).json({ ok, checks });
 }
 

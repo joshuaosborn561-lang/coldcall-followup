@@ -15,7 +15,8 @@ Allo v2 conversations/items/search  (last ~20 minutes, OUTBOUND)
    -> keep no-connect + voicemail hits; drop real conversations
    -> email: Allo CRM -> call audio extraction -> enrichment
    -> dedupe by email, newest eligible call wins
-   -> POST /campaigns/3739316/leads on Smartlead
+   -> VerifyFall waterfall (MX → MillionVerifier → No2Bounce)
+   -> only SENDABLE (SEG + OTHER) POST /campaigns/3739316/leads
 ```
 
 Runs on Railway (`server.js`). The always-on process owns the 10-minute
@@ -129,6 +130,14 @@ Only addresses the provider itself calls deliverable are accepted.
 
 `PROBE_ENRICH=1` exercises each provider once and logs raw responses.
 
+**No address reaches Smartlead until Josh's verifier waterfall marks it
+SENDABLE.** Each 10-minute tick submits a batch (default 75) to
+[VerifyFall](https://verifyfall-production.up.railway.app) via `POST /api/upload`,
+then on later ticks harvests completed runs. SENDABLE (SEG + OTHER) is
+uploaded; REJECTED is stored and never re-enriched or re-verified.
+`SUPABASE_SERVICE_ROLE_KEY` (same project as VerifyFall) makes that memory
+survive deploys; otherwise it lives in `VERDICT_STORE_PATH`.
+
 Allo CRM emails are normalized before upload: comma-joined values like
 `a@x.com,b@y.com` are split, invalid addresses dropped, and the address that
 best matches the contact's name is preferred.
@@ -143,6 +152,7 @@ Variables:
 ```
 ALLO_API_KEY  SMARTLEAD_API_KEY  SMARTLEAD_CAMPAIGN_ID
 GETLEADS_API_KEY  AI_ARK_API_KEY  LEADMAGIC_API_KEY
+VERIFYFALL_URL  SUPABASE_URL  SUPABASE_SERVICE_ROLE_KEY
 ```
 
 Optionally set `CRON_SECRET` to close the endpoints — see
@@ -181,7 +191,7 @@ ALLO_API_KEY=... SMARTLEAD_API_KEY=... SMARTLEAD_CAMPAIGN_ID=3739316 \
 | --- | --- |
 | `GET /api/cron` | Scheduled incremental run. Weekday-daytime guard; last `LOOKBACK_MINUTES` only. |
 | `GET /api/run` | Manual run, no clock guard. `?dry=1` to preview, `?date=YYYY-MM-DD` (and optional `?through=`) for a full-day backfill, `?lookback=20` for the incremental window, `?notify=1` to also post to Slack. |
-| `GET /api/health` | Read-only pre-flight: env, Allo reachability + scopes, Smartlead campaign. |
+| `GET /api/health` | Read-only pre-flight: env, Allo, VerifyFall, Smartlead campaign. |
 
 ### Endpoint access
 
@@ -344,7 +354,10 @@ lib/
   names.js       first/last name split and normalization for merge fields
   routes.js      Allo number -> rep -> Smartlead campaign mapping
   smartlead.js   Smartlead client, batched lead upload
-  pipeline.js    the job: calls -> people -> leads, deduped across reps
+  pipeline.js    the job: calls -> people -> verify -> Smartlead
+  verifier.js    VerifyFall HTTP client (upload / poll / SENDABLE CSV)
+  verdicts.js    rejected/sendable memory (Supabase + file)
+  gate.js        batch verify, harvest completed runs, push only SENDABLE
   time.js        day windows, 20-minute lookback, weekday-daytime guard
   voicemail.js   no-connect / voicemail vs live-conversation classifier
   notify.js      optional Slack summary
