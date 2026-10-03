@@ -16,8 +16,12 @@ import { createServer } from 'node:http';
 import cronHandler from './api/cron.js';
 import healthHandler from './api/health.js';
 import runHandler from './api/run.js';
+import postcallHandler from './api/postcall.js';
+import postcallReportHandler from './api/postcall-report.js';
 import { notifySlack } from './lib/notify.js';
 import { runFollowUp } from './lib/pipeline.js';
+import { runRecentVoicemails } from './lib/postcall/pipeline.js';
+import { runDailyReport } from './lib/postcall/report.js';
 import {
   DAYTIME_END_HOUR,
   DAYTIME_START_HOUR,
@@ -31,12 +35,25 @@ import {
 } from './lib/time.js';
 
 const PORT = Number(process.env.PORT || 3000);
+
+async function readJsonBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  if (chunks.length === 0) return {};
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+  } catch {
+    return {};
+  }
+}
 const TICK_MS = 30_000;
 
 const ROUTES = {
   '/api/cron': cronHandler,
   '/api/run': runHandler,
   '/api/health': healthHandler,
+  '/api/postcall': postcallHandler,
+  '/api/postcall/report': postcallReportHandler,
 };
 
 /** Vercel's res API (res.status(n).json(obj)) on top of a node ServerResponse. */
@@ -73,6 +90,9 @@ const server = createServer(async (req, res) => {
   if (!handler) return shim(res).status(404).json({ ok: false, error: `No route ${path}` });
 
   try {
+    if (req.method === 'POST' && !req.body) {
+      req.body = await readJsonBody(req);
+    }
     await handler(req, shim(res));
   } catch (err) {
     if (!res.writableEnded) shim(res).status(500).json({ ok: false, error: err.message });
@@ -83,6 +103,8 @@ const server = createServer(async (req, res) => {
 
 let lastFiredSlot = null;
 let lastScheduledRun = null;
+let lastPostcallSlot = null;
+let lastReportDay = null;
 
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -147,6 +169,41 @@ async function tick() {
   }
 }
 
+/**
+ * Voicemail → isolated Smartlead campaigns. Runs about every 30s over the
+ * last 3 minutes so a disposition is mailed within 2 minutes. Does not
+ * touch Cayden's campaign 3739316.
+ */
+async function postcallTick() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return;
+  if (/^(0|false|no)$/i.test(process.env.POSTCALL_ENABLED || '1')) return;
+  lastPostcallSlot = new Date().toISOString();
+  const dryRun = /^(1|true|yes)$/i.test(process.env.POSTCALL_DRY_RUN || '');
+  try {
+    const stats = await runRecentVoicemails({ lookbackMinutes: 3, dryRun });
+    if ((stats.counts?.sent || 0) + (stats.counts?.queued || 0) + (stats.counts?.skipped || 0) > 0) {
+      console.log('[postcall]', JSON.stringify({ dryRun, counts: stats.counts, skipReasons: stats.skipReasons }));
+    }
+  } catch (err) {
+    console.error('[postcall] failed:', err.message);
+  }
+}
+
+async function reportTick() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return;
+  const et = zonedParts(new Date(), TZ);
+  if (et.hour !== 18 || et.minute > 2) return;
+  const day = et.date;
+  if (lastReportDay === day) return;
+  lastReportDay = day;
+  try {
+    const report = await runDailyReport({ day, dryRun: false });
+    console.log('[postcall-report]', report.text);
+  } catch (err) {
+    console.error('[postcall-report] failed:', err.message);
+  }
+}
+
 function shouldNotify(stats) {
   const totals = stats.totals || {};
   return (
@@ -166,6 +223,8 @@ server.listen(PORT, () => {
   );
   setInterval(() => {
     tick().catch((err) => console.error('tick failed:', err));
+    postcallTick().catch((err) => console.error('postcall tick failed:', err));
+    reportTick().catch((err) => console.error('postcall report tick failed:', err));
   }, TICK_MS);
 
   // PROBE_ALLO=1 prints the status of a set of candidate Allo endpoints, for

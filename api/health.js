@@ -12,6 +12,7 @@ import { getCapabilities, listNumbers, listUsers, searchPeople } from '../lib/al
 import { getCampaign } from '../lib/smartlead.js';
 import { verifierHealth } from '../lib/verifier.js';
 import { hasSupabaseVerdicts } from '../lib/verdicts.js';
+import { getPostcallStore } from '../lib/postcall/store.js';
 import {
   DAYTIME_END_HOUR,
   DAYTIME_START_HOUR,
@@ -93,6 +94,25 @@ export default async function handler(req, res) {
       ok: health?.ok === true,
       service: health?.service || null,
       durableVerdicts: hasSupabaseVerdicts(),
+    };
+  });
+
+  checks.postcall = await probe(async () => {
+    if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return { configured: false, note: 'SUPABASE_SERVICE_ROLE_KEY missing — post-call path idle; Cayden Smartlead path unchanged' };
+    }
+    const configs = await getPostcallStore().loadConfigs();
+    return {
+      configured: true,
+      callers: [...new Set(configs.map((c) => c.caller))],
+      rows: configs.map((c) => ({
+        caller: c.caller,
+        client: c.client,
+        sendEnabled: c.send_enabled,
+        smartleadCampaignId: c.smartlead_campaign_id,
+        inboxes: (c.inboxes || []).length,
+        templates: (c.templates || []).map((t) => `${t.kind}:${t.status}`),
+      })),
     };
   });
 

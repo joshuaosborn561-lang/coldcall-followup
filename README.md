@@ -142,7 +142,38 @@ Allo CRM emails are normalized before upload: comma-joined values like
 `a@x.com,b@y.com` are split, invalid addresses dropped, and the address that
 best matches the contact's name is preferred.
 
-### 4. Deploy
+### 4. Multi-caller post-call (Smartlead)
+
+When Allo logs a **voicemail** disposition, look up the caller
+(`allo_user_id` / name) and the client (Allo list `"<Client> | <Time zone>"`).
+Sending is **Smartlead** — one campaign per caller + client. Config is one
+row in `postcall_caller_configs`, not hardcoded.
+
+| Caller | Client | Smartlead campaign | Booking | Signature | New ticker |
+| --- | --- | --- | --- | --- | --- |
+| Cayden | SalesGlider | **3739316** (existing) | `/salesglider` | SalesGlider | **off** — 10-min job unchanged |
+| Gabe | SalesGlider | 4074264 (DRAFTED) | `/salesglider` | SalesGlider | on, templates **draft** |
+| Gabe | EMCOR | 4074265 (DRAFTED) | `/emcor` | Mesa Energy | on, templates **draft** |
+| Gabe | Deep Roots | 4074266 (DRAFTED) | `/deeproots` | (blank) | on, templates **draft** |
+
+Gabe is never imported into 3739316. First email = lead import on *his*
+campaign; later emails = Smartlead `reply-email-thread` on that same lead.
+Existing Smartlead campaign sequences (EMCOR A Property, etc.) are never
+replied onto.
+
+Inbox pools, sticky sender, 35/day cap, Smartlead threading, stop rules, and
+the daily Slack report all live under `/api/postcall`. Dry-run writes
+events and thread ids but sends nothing.
+
+```bash
+node scripts/seed-gabe-postcall.js
+curl "https://followup-production-a954.up.railway.app/api/postcall?dry=1&seed=1"
+```
+
+Nothing live-sends until the template `status` is `approved` **and**
+`send_enabled` is true. Approve in `postcall_templates`.
+
+### 5. Deploy
 
 Deployed on Railway, project `coldcall-follow-up`, service `followup`. It
 builds from `main` and runs `npm start` (`server.js`), which schedules
