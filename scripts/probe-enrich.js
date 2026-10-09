@@ -12,7 +12,6 @@
  *      known person from the Allo CRM (Amanda Alvarez @ omegaroofer.com).
  */
 
-const LEADMAGIC = process.env.LEADMAGIC_API_KEY;
 const AI_ARK = process.env.AI_ARK_API_KEY;
 const GETLEADS = process.env.GETLEADS_API_KEY;
 
@@ -55,10 +54,6 @@ async function hit(label, url, { method = 'GET', headers = {}, body } = {}) {
 export async function probeEnrich() {
   console.log(`PE target: ${TARGET.first_name} ${TARGET.last_name} @ ${TARGET.domain}`);
 
-  // LeadMagic is already verified working, and its email-finder costs a credit
-  // per call -- deliberately not probed again.
-  console.log('PE LeadMagic: already verified, skipped (costs a credit)');
-
   // --- AI Ark --- developer-portal base + X-TOKEN auth.
   if (AI_ARK) {
     await hit('ARK credits', `${AI_ARK_BASE}/v1/payments/credits`, {
@@ -81,8 +76,7 @@ export async function probeEnrich() {
   } else console.log('PE AI Ark: no key');
 
   // --- getleads --- verify contacts/search with the field names from the
-  // MCP schema (domains[], require_email, email_status), against a person we
-  // know LeadMagic can resolve.
+  // MCP schema (domains[], require_email, email_status).
   if (GETLEADS) {
     await hit('GL contacts/search', 'https://app.getleads.io/api/v1/contacts/search', {
       method: 'POST',

@@ -44,7 +44,7 @@ export default async function handler(req, res) {
     env: {
       ok: missing.length === 0,
       missing,
-      enrichmentProviders: ['GETLEADS_API_KEY', 'AI_ARK_API_KEY', 'LEADMAGIC_API_KEY'].filter(
+      enrichmentProviders: ['GETLEADS_API_KEY', 'AI_ARK_API_KEY'].filter(
         (k) => Boolean(process.env[k])
       ),
       verifierUrl: process.env.VERIFYFALL_URL || 'https://verifyfall-production.up.railway.app',
