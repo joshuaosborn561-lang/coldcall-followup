@@ -117,15 +117,14 @@ Allo's CRM holds names, job titles, companies and websites but **almost no
 email addresses** — so most people we follow up with need enriching
 from (first name, last name, company domain).
 
-Order when Allo has no email: **getleads → AI Ark → LeadMagic**.
+Order when Allo has no email: **getleads → AI Ark**.
 
 | Provider | Env var | Status |
 | --- | --- | --- |
 | getleads | `GETLEADS_API_KEY` | **verified** — `app.getleads.io/api/v1/contacts/search` |
 | AI Ark | `AI_ARK_API_KEY` | **active** — people search + `/v2/people/export/single` (`X-TOKEN`) |
-| LeadMagic | `LEADMAGIC_API_KEY` | **verified** — `/email-finder` |
 
-The waterfall stops at the first hit, so a lead costs one lookup, not three.
+The waterfall stops at the first hit, so a lead costs one lookup, not two.
 Only addresses the provider itself calls deliverable are accepted.
 
 `PROBE_ENRICH=1` exercises each provider once and logs raw responses.
@@ -151,7 +150,7 @@ Variables:
 
 ```
 ALLO_API_KEY  SMARTLEAD_API_KEY  SMARTLEAD_CAMPAIGN_ID
-GETLEADS_API_KEY  AI_ARK_API_KEY  LEADMAGIC_API_KEY
+GETLEADS_API_KEY  AI_ARK_API_KEY
 VERIFYFALL_URL  SUPABASE_URL  SUPABASE_SERVICE_ROLE_KEY
 ```
 
